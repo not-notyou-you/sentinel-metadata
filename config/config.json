@@ -1,0 +1,29 @@
+{
+  "db": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "sentinel1_flood",
+    "pool_size": 5,
+    "max_overflow": 10,
+    "echo": false
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "debug": false
+  },
+  "pipeline": {
+    "output_dir": "processed",
+    "logs_dir": "logs_pipeline",
+    "checkpoint_dir": "checkpoints_pipeline",
+    "analytics_dir": "analytics",
+    "lee_window_size": 7,
+    "lee_looks": 1,
+    "cog_compression": "LZW",
+    "cog_blocksize": 512,
+    "cog_overviews": [2, 4, 8, 16],
+    "min_quality_score": 60.0,
+    "max_nodata_percent": 30.0,
+    "cloud_threshold_percent": 20.0
+  }
+}
