@@ -1,7 +1,9 @@
+# etl/database_client.py
 """
 SQLAlchemy ORM models, connection pooling, session management, and retry logic
 for the Sentinel-1 Flood Detection Data Pipeline.
 
+Author : Julius Marselinus (BRONTO) - NIM 00000111989
 Program: Sistem Informasi - Universitas Multimedia Nusantara
 """
 
@@ -13,12 +15,6 @@ import time
 from contextlib import contextmanager
 from enum import Enum as PyEnum
 from typing import Generator
-
-from dotenv import load_dotenv
-
-# Load environment variables from .env
-load_dotenv()
-print("DB_PASSWORD =", repr(os.getenv("DB_PASSWORD")))
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
@@ -657,18 +653,18 @@ class DatabaseClient:
         Verify database connectivity and return pool statistics.
 
         Returns:
-            dict with keys: connected (bool), pool_size, checked_out, overflow, invalid
+            dict with keys: connected (bool), pool_size, checked_out, overflow
         """
         pool = self._engine.pool
         try:
             with self._engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
+            # pool.invalidated() was removed in SQLAlchemy 2.x — omit it
             return {
                 "connected":   True,
                 "pool_size":   pool.size(),
                 "checked_out": pool.checkedout(),
                 "overflow":    pool.overflow(),
-                "invalid":     pool.invalidated(),
             }
         except Exception as exc:
             logger.error("Health check failed: %s", exc)

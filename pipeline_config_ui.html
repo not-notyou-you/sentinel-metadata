@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sentinel-1 Pipeline Config</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2128;
+    --border: #30363d; --text: #e6edf3; --muted: #7d8590;
+    --green: #3fb950; --green-dim: #238636;
+    --blue: #388bfd; --blue-dim: #1f4a8a;
+    --amber: #d29922; --red: #f85149;
+    --radius: 8px; --font: system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.6; }
+
+  /* Top bar */
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; gap: 10px; }
+  .topbar h1 { font-size: 15px; font-weight: 600; }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .status-pill.ok { background: #1a2d1e; color: var(--green); border: 1px solid #238636; }
+  .status-pill.err { background: #2d1a1a; color: var(--red); border: 1px solid #6e1a1a; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  /* Layout */
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 45px); }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px 12px; }
+  .sidebar-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding: 6px 8px 4px; }
+  .nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 13px; transition: all .12s; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: #1a2d1e; color: var(--green); }
+
+  .main { padding: 24px 28px; overflow-y: auto; }
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* Page header */
+  .page-title { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
+  .page-desc { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
+  .card-title { font-size: 13px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: var(--blue-dim); color: var(--blue); }
+
+  /* Form */
+  label.field-label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .field { margin-bottom: 14px; }
+  .label-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+  .label-row label { margin-bottom: 0; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .label-val { font-size: 13px; color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  input[type="number"], input[type="date"], select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: 13px; font-family: var(--font); padding: 7px 10px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(56,139,253,0.15); }
+  input[type="range"] { -webkit-appearance: none; width: 100%; height: 3px; background: var(--border); border-radius: 2px; outline: none; cursor: pointer; padding: 0; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--blue); cursor: pointer; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
+
+  /* Multi-select region cards */
+  .region-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+  .region-card {
+    border: 2px solid var(--border); border-radius: 8px; padding: 12px;
+    cursor: pointer; transition: all .15s; user-select: none; position: relative;
+  }
+  .region-card:hover { border-color: var(--blue); background: rgba(56,139,253,0.05); }
+  .region-card.selected { border-color: var(--green); background: rgba(63,185,80,0.06); }
+  .region-card .rc-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .region-card .rc-sub { font-size: 11px; color: var(--muted); }
+  .region-card .rc-area { font-size: 10px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .region-card .check {
+    position: absolute; top: 8px; right: 8px; width: 16px; height: 16px;
+    border-radius: 50%; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center;
+    font-size: 9px; transition: all .15s;
+  }
+  .region-card.selected .check { background: var(--green-dim); border-color: var(--green); color: white; }
+
+  /* Source badge */
+  .source-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; margin-top: 4px; }
+
+  /* Map */
+  #map { height: 320px; border-radius: 8px; border: 1px solid var(--border); margin-top: 10px; }
+
+  /* Bbox display */
+  .bbox-display { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; font-family: monospace; font-size: 11px; color: var(--blue); margin-top: 8px; word-break: break-all; }
+
+  /* Info boxes */
+  .info-box { border-radius: 6px; padding: 9px 12px; font-size: 12px; display: flex; gap: 8px; align-items: flex-start; margin-bottom: 14px; }
+  .info-box.info { background: #0d1f3c; border: 1px solid var(--blue-dim); color: #79c0ff; }
+  .info-box.warn { background: #2d1f00; border: 1px solid #5c3d02; color: #e3b341; }
+  .info-box.success { background: #0d2d1a; border: 1px solid #238636; color: #56d364; }
+
+  /* Toggle */
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .toggle-row:last-child { border-bottom: none; }
+  .toggle-info h4 { font-size: 13px; font-weight: 500; }
+  .toggle-info p { font-size: 11px; color: var(--muted); }
+  .toggle { position: relative; width: 34px; height: 18px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--border); border-radius: 18px; cursor: pointer; transition: background .2s; }
+  .slider::before { content: ''; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: white; left: 3px; top: 3px; transition: transform .2s; }
+  .toggle input:checked + .slider { background: var(--green-dim); }
+  .toggle input:checked + .slider::before { transform: translateX(16px); }
+
+  /* Buttons */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: pointer; transition: all .12s; }
+  .btn-primary { background: var(--green-dim); color: #fff; }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: var(--border); }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+  /* Save bar */
+  .save-bar { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 12px 28px; display: flex; align-items: center; gap: 12px; margin: 0 -28px -24px; }
+  .save-msg { font-size: 12px; color: var(--green); }
+
+  /* Stats */
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+  .stat-val { font-size: 22px; font-weight: 700; }
+  .stat-label { font-size: 11px; color: var(--muted); }
+  .stat-card.green .stat-val { color: var(--green); }
+  .stat-card.blue .stat-val { color: var(--blue); }
+  .stat-card.amber .stat-val { color: var(--amber); }
+
+  /* Code block */
+  .code-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .code-block .comment { color: var(--green); }
+  .code-block .cmd { color: var(--text); }
+
+  /* Selection summary */
+  .sel-summary { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; margin-top: 10px; }
+  .sel-summary strong { color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>🛰️</div>
+  <h1>Sentinel-1 Pipeline Config</h1>
+  <div class="topbar-right">
+    <span style="font-size:11px;color:var(--muted)" id="last-save-label">—</span>
+    <div id="db-status" class="status-pill err"><span class="dot"></span> Mengecek...</div>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-label">Pengaturan</div>
+    <div class="nav-item active" onclick="go('area',this)">🗺️ &nbsp;Area & Waktu</div>
+    <div class="nav-item" onclick="go('pipeline',this)">⚙️ &nbsp;Parameter Pipeline</div>
+    <div class="nav-item" onclick="go('kualitas',this)">📊 &nbsp;Ambang Kualitas</div>
+    <div class="nav-item" onclick="go('database',this)">🗄️ &nbsp;Database</div>
+    <div class="sidebar-label" style="margin-top:14px">Monitor</div>
+    <div class="nav-item" onclick="go('status',this)">📡 &nbsp;Status Pipeline</div>
+  </nav>
+
+  <main class="main">
+
+    <!-- ══ TAB: AREA & WAKTU ══ -->
+    <section id="tab-area" class="section active">
+      <div class="page-title">Area & Rentang Waktu</div>
+      <div class="page-desc">Pilih wilayah AOI yang ingin dipantau — bisa lebih dari satu. Koordinat diverifikasi dari sumber resmi BPS dan OpenStreetMap.</div>
+
+      <!-- Multi-select wilayah -->
+      <div class="card">
+        <div class="card-title">
+          🗺️ Pilih Wilayah AOI
+          <span class="badge">Pilih satu atau lebih</span>
+        </div>
+
+        <div class="info-box info">
+          💡 Pilih satu atau beberapa wilayah. Pipeline akan menggabungkan semua bbox yang dipilih menjadi satu area survei.
+        </div>
+
+        <div class="region-grid" id="region-grid">
+          <!-- diisi oleh JS -->
+        </div>
+
+        <div id="sel-summary" class="sel-summary" style="display:none"></div>
+
+        <div style="margin-top:12px">
+          <label class="field-label">Preview peta area terpilih</label>
+          <div id="map"></div>
+          <div class="source-tag">
+            🔗 Sumber koordinat: BPS DKI Jakarta, OpenStreetMap, koordinat.id
+          </div>
+          <div class="bbox-display" id="bbox-display">Pilih minimal satu wilayah di atas</div>
+        </div>
+      </div>
+
+      <!-- Waktu -->
+      <div class="card">
+        <div class="card-title">📅 Rentang Waktu</div>
+        <div class="field">
+          <label class="field-label">Mode</label>
+          <select id="time-mode" onchange="toggleTimeMode(this.value)">
+            <option value="relative">🔄 N hari terakhir (dinamis — selalu up-to-date)</option>
+            <option value="absolute">📌 Tanggal spesifik (statis)</option>
+          </select>
+        </div>
+
+        <div id="mode-relative">
+          <div class="field">
+            <div class="label-row">
+              <label>Jumlah hari ke belakang</label>
+              <span class="label-val" id="days-val">90 hari</span>
+            </div>
+            <input type="range" id="days-back" min="6" max="1095" value="90"
+                   oninput="document.getElementById('days-val').textContent=this.value+' hari';updatePreview()">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+              <span>6 hr (1 pass)</span><span>90 hr (3 bln)</span><span>365 hr (1 thn)</span><span>3 thn</span>
+            </div>
+          </div>
+          <div class="info-box success" id="preview-box">
+            📡 Data dari <strong id="from-date"></strong> sampai <strong>hari ini</strong>
+            — estimasi <strong id="est-scenes"></strong> scene Sentinel-1
+          </div>
+        </div>
+
+        <div id="mode-absolute" style="display:none">
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label">Tanggal mulai</label>
+              <input type="date" id="date-from" value="2024-01-01">
+            </div>
+            <div class="field">
+              <label class="field-label">Tanggal selesai</label>
+              <input type="date" id="date-to" value="2024-12-31">
+            </div>
+          </div>
+          <div class="info-box warn">
+            ⏳ Data historis Sentinel-1 tersedia mulai 2014. Semakin panjang rentang, semakin banyak data.
+          </div>
+        </div>
+      </div>
+
+      <!-- Orbit -->
+      <div class="card">
+        <div class="card-title">🛸 Arah Orbit</div>
+        <div style="display:flex;gap:10px">
+          <label style="flex:1;border:2px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all .15s" id="orb-asc-lbl">
+            <input type="checkbox" id="orb-asc" checked onchange="updateOrbitLabels()" style="accent-color:var(--green);margin-right:6px">
+            <span style="font-size:13px;font-weight:600">⬆️ ASCENDING</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:3px">Pagi hari ~05:30 WIB<br>Baik untuk flood detection</p>
+          </label>
+          <label style="flex:1;border:2px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all .15s" id="orb-desc-lbl">
+            <input type="checkbox" id="orb-desc" onchange="updateOrbitLabels()" style="accent-color:var(--green);margin-right:6px">
+            <span style="font-size:13px;font-weight:600">⬇️ DESCENDING</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:3px">Sore hari ~17:30 WIB<br>Coverage komplementer</p>
+          </label>
+        </div>
+      </div>
+
+      <div class="save-bar">
+        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan & Generate Config</button>
+        <span class="save-msg" id="save-msg-area" style="display:none">✅ Tersimpan!</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">Config disimpan di browser. Copy ke config/config.json untuk diterapkan.</span>
+      </div>
+    </section>
+
+    <!-- ══ TAB: PIPELINE ══ -->
+    <section id="tab-pipeline" class="section">
+      <div class="page-title">Parameter Pipeline ETL</div>
+      <div class="page-desc">Atur parameter pemrosesan setiap modul. Nilai default sudah dioptimalkan untuk data Sentinel-1 IW GRD.</div>
+
+      <div class="card">
+        <div class="card-title">🔧 Lee Filter — Reduksi Noise SAR</div>
+        <div class="grid-2">
+          <div class="field">
+            <div class="label-row"><label>Window size</label><span class="label-val" id="lee-w-val">7 × 7</span></div>
+            <input type="range" id="lee-window" min="3" max="15" step="2" value="7"
+                   oninput="document.getElementById('lee-w-val').textContent=this.value+' × '+this.value">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+              <span>3×3 (detail)</span><span>7×7 (standar)</span><span>15×15 (halus)</span>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label">Jumlah looks</label>
+            <select id="lee-looks">
+              <option value="1" selected>1 look (Sentinel-1 GRD standar)</option>
+              <option value="2">2 looks</option>
+              <option value="4">4 looks</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📦 COG Export</div>
+        <div class="grid-2">
+          <div class="field">
+            <label class="field-label">Kompresi</label>
+            <select id="cog-compress">
+              <option value="LZW" selected>LZW — lossless, kompatibilitas terbaik</option>
+              <option value="DEFLATE">DEFLATE — file lebih kecil</option>
+              <option value="ZSTD">ZSTD — tercepat</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Tile block size</label>
+            <select id="cog-block">
+              <option value="256">256px — untuk area kecil</option>
+              <option value="512" selected>512px — standar COG</option>
+              <option value="1024">1024px — untuk area besar</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Unit backscatter output</label>
+            <select id="cog-db">
+              <option value="false" selected>Linear (DN) — untuk ML langsung</option>
+              <option value="true">Desibel (dB) — untuk analisis fisik</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔁 Retry & Timeout Orchestrator</div>
+        <div class="grid-2">
+          <div class="field">
+            <div class="label-row"><label>Max retry per stage</label><span class="label-val" id="retry-val">3 ×</span></div>
+            <input type="range" id="retry-count" min="1" max="5" value="3"
+                   oninput="document.getElementById('retry-val').textContent=this.value+' ×'">
+          </div>
+          <div class="field">
+            <div class="label-row"><label>Delay antar retry</label><span class="label-val" id="delay-val">30 dtk</span></div>
+            <input type="range" id="retry-delay" min="5" max="120" value="30" step="5"
+                   oninput="document.getElementById('delay-val').textContent=this.value+' dtk'">
+          </div>
+        </div>
+      </div>
+
+      <div class="save-bar">
+        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan Config Pipeline</button>
+        <span class="save-msg" id="save-msg-pipeline" style="display:none">✅ Tersimpan!</span>
+      </div>
+    </section>
+
+    <!-- ══ TAB: KUALITAS ══ -->
+    <section id="tab-kualitas" class="section">
+      <div class="page-title">Ambang Batas Kualitas</div>
+      <div class="page-desc">Tentukan standar minimum agar data diterima (PASS) atau ditolak (FAIL). Data di bawah standar tetap disimpan tapi di-flag.</div>
+
+      <div class="card">
+        <div class="card-title">✅ Skor Kualitas Minimum</div>
+        <div class="field">
+          <div class="label-row">
+            <label>Skor minimum untuk status PASS</label>
+            <span class="label-val" id="min-score-val" style="color:var(--green)">60 / 100</span>
+          </div>
+          <input type="range" id="min-score" min="0" max="100" value="60"
+                 oninput="updateScoreColor(this.value)">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
+            <span>0 (semua lolos)</span><span>60 (standar)</span><span>80 (ketat)</span><span>100</span>
+          </div>
+        </div>
+        <div class="field">
+          <div class="label-row"><label>Max % pixel NoData</label><span class="label-val" id="nodata-val">30 %</span></div>
+          <input type="range" id="max-nodata" min="0" max="100" value="30"
+                 oninput="document.getElementById('nodata-val').textContent=this.value+' %'">
+        </div>
+        <div class="field">
+          <div class="label-row"><label>Ambang tutupan awan</label><span class="label-val" id="cloud-val">20 %</span></div>
+          <input type="range" id="cloud-thresh" min="0" max="100" value="20"
+                 oninput="document.getElementById('cloud-val').textContent=this.value+' %'">
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔔 Alert Otomatis</div>
+        <div class="toggle-row">
+          <div class="toggle-info"><h4>Alert saat quality FAIL</h4><p>Simpan ke alert_events jika skor di bawah minimum</p></div>
+          <label class="toggle"><input type="checkbox" id="alert-fail" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info"><h4>Alert data baru tiba</h4><p>INFO saat scene berhasil diproses penuh</p></div>
+          <label class="toggle"><input type="checkbox" id="alert-arrival" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info"><h4>Alert pipeline error</h4><p>CRITICAL jika stage gagal setelah semua retry habis</p></div>
+          <label class="toggle"><input type="checkbox" id="alert-error" checked><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <div class="save-bar">
+        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan Ambang Kualitas</button>
+        <span class="save-msg" id="save-msg-kualitas" style="display:none">✅ Tersimpan!</span>
+      </div>
+    </section>
+
+    <!-- ══ TAB: DATABASE ══ -->
+    <section id="tab-database" class="section">
+      <div class="page-title">Konfigurasi Database</div>
+      <div class="page-desc">Pengaturan koneksi PostgreSQL. Edit file <code>.env</code> untuk mengubah nilai ini.</div>
+
+      <div class="info-box warn">
+        ⚠️ Jangan ubah file <code>.env</code> di sini — ubah langsung di teks editor. Halaman ini hanya untuk referensi dan test koneksi.
+      </div>
+
+      <div class="card">
+        <div class="card-title">🗄️ Koneksi (dari .env)</div>
+        <div class="grid-2">
+          <div class="field"><label class="field-label">DB_HOST</label><input value="localhost" readonly style="opacity:.5;cursor:default"></div>
+          <div class="field"><label class="field-label">DB_PORT</label><input value="5432" readonly style="opacity:.5;cursor:default"></div>
+          <div class="field"><label class="field-label">DB_NAME</label><input value="sentinel1_flood" readonly style="opacity:.5;cursor:default"></div>
+          <div class="field"><label class="field-label">DB_USER</label><input value="postgres" readonly style="opacity:.5;cursor:default"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔌 Test Koneksi</div>
+        <button class="btn btn-secondary" onclick="testConn()">🔍 Test koneksi ke API</button>
+        <div id="conn-result" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <!-- ══ TAB: STATUS ══ -->
+    <section id="tab-status" class="section">
+      <div class="page-title">Status Pipeline</div>
+      <div class="page-desc">Ringkasan sistem saat ini dari database.</div>
+
+      <div class="stat-row">
+        <div class="stat-card green"><div class="stat-val" id="s-scenes">—</div><div class="stat-label">Scene Terdaftar</div></div>
+        <div class="stat-card blue"><div class="stat-val" id="s-gold">—</div><div class="stat-label">Produk GOLD</div></div>
+        <div class="stat-card green"><div class="stat-val" id="s-pass">—</div><div class="stat-label">QA PASS</div></div>
+        <div class="stat-card amber"><div class="stat-val" id="s-alerts">—</div><div class="stat-label">Alert Aktif</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔗 Link Cepat API</div>
+        <div style="display:flex;flex-direction:column;gap:7px;font-size:13px">
+          <a href="http://localhost:8000/docs" target="_blank" style="color:var(--blue)">📖 Swagger UI (dokumentasi interaktif)</a>
+          <a href="http://localhost:8000/api/health" target="_blank" style="color:var(--blue)">💓 Health Check</a>
+          <a href="http://localhost:8000/api/scenes" target="_blank" style="color:var(--blue)">🛰️ Daftar Scene</a>
+          <a href="http://localhost:8000/api/quality/1" target="_blank" style="color:var(--blue)">📊 Kualitas Scene #1</a>
+          <a href="http://localhost:8000/api/metadata/lineage/7" target="_blank" style="color:var(--blue)">🔗 Lineage Produk GOLD #7</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">💻 Perintah PowerShell</div>
+        <div class="code-block">
+          <span class="comment"># Aktifkan virtual environment</span>
+          <span class="cmd">venv\Scripts\activate</span>
+          <span class="comment" style="margin-top:6px"># Start API server</span>
+          <span class="cmd">uvicorn api.main:app --reload --host 0.0.0.0 --port 8000</span>
+          <span class="comment" style="margin-top:6px"># Insert seed data</span>
+          <span class="cmd">python -m etl.seed_data</span>
+          <span class="comment" style="margin-top:6px"># Jalankan semua test</span>
+          <span class="cmd">pytest tests/ -v --cov=etl --cov=api</span>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary" onclick="loadStatus()" style="margin-top:4px">🔄 Refresh Status</button>
+    </section>
+
+  </main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// REGION DATA — koordinat diverifikasi dari sumber resmi:
+// Sumber: Biro Pemerintahan Sekretariat Daerah Provinsi DKI Jakarta
+//         BPS Indonesia, OpenStreetMap (OSM Nominatim)
+//         Koordinat diverifikasi per Manado Post (2025): DKI 5.60°S-6.37°S, 106.29°-106.97°BT
+// ═══════════════════════════════════════════════════════════════════
+const REGIONS = [
+  {
+    id: 'dki_jakarta',
+    name: 'DKI Jakarta',
+    sub: 'Ibu Kota (5 kota adm + Kep. Seribu)',
+    area: '661.5 km²',
+    // Sumber: Biro Pemerintahan Pemprov DKI Jakarta
+    // 5.602416°S – 6.372426°S, 106.294848°BT – 106.973391°BT
+    bbox: { minLon: 106.2948, maxLon: 106.9734, minLat: -6.3724, maxLat: -5.6024 },
+    color: '#388bfd',
+  },
+  {
+    id: 'kota_bogor',
+    name: 'Kota Bogor',
+    sub: 'Kota, 60 km selatan Jakarta',
+    area: '118.5 km²',
+    // Sumber: BPS / OSM — center -6.5944, 106.7892
+    bbox: { minLon: 106.7400, maxLon: 106.8600, minLat: -6.6500, maxLat: -6.5200 },
+    color: '#3fb950',
+  },
+  {
+    id: 'kab_bogor',
+    name: 'Kabupaten Bogor',
+    sub: 'Meliputi Cibinong, Sentul, Ciawi',
+    area: '2,710 km²',
+    // Sumber: OSM — kabupaten envelope
+    bbox: { minLon: 106.3000, maxLon: 107.2500, minLat: -6.9000, maxLat: -6.2000 },
+    color: '#238636',
+  },
+  {
+    id: 'kota_depok',
+    name: 'Kota Depok',
+    sub: 'Selatan Jakarta, berbatasan langsung',
+    area: '200.3 km²',
+    // Sumber: OSM — center -6.4000, 106.8186
+    bbox: { minLon: 106.7100, maxLon: 106.9000, minLat: -6.4800, maxLat: -6.3200 },
+    color: '#d29922',
+  },
+  {
+    id: 'kota_tangerang',
+    name: 'Kota Tangerang',
+    sub: 'Barat Jakarta, termasuk Bandara',
+    area: '164.5 km²',
+    // Sumber: OSM — center -6.178, 106.63
+    bbox: { minLon: 106.5600, maxLon: 106.7200, minLat: -6.2600, maxLat: -6.1000 },
+    color: '#f85149',
+  },
+  {
+    id: 'kab_tangerang',
+    name: 'Kabupaten Tangerang',
+    sub: 'Meliputi Serpong, BSD, Tangerang Selatan',
+    area: '959.6 km²',
+    // Sumber: OSM — envelope kabupaten + kota tangsel
+    bbox: { minLon: 106.4500, maxLon: 106.8000, minLat: -6.4000, maxLat: -5.9500 },
+    color: '#ff7b72',
+  },
+  {
+    id: 'kota_bekasi',
+    name: 'Kota Bekasi',
+    sub: 'Timur Jakarta, paling padat',
+    area: '210.5 km²',
+    // Sumber: OSM — center -6.2383, 106.9756
+    bbox: { minLon: 106.8900, maxLon: 107.0600, minLat: -6.3500, maxLat: -6.1300 },
+    color: '#ffa657',
+  },
+  {
+    id: 'kab_bekasi',
+    name: 'Kabupaten Bekasi',
+    sub: 'Timur laut Jabodetabek, industri',
+    area: '1,484 km²',
+    // Sumber: OSM — envelope kabupaten
+    bbox: { minLon: 106.9500, maxLon: 107.4500, minLat: -6.5000, maxLat: -6.0000 },
+    color: '#e3b341',
+  },
+  {
+    id: 'jabodetabek',
+    name: '🌐 Seluruh Jabodetabek',
+    sub: 'Gabungan semua wilayah di atas',
+    area: '~6,392 km²',
+    // Envelope keseluruhan Jabodetabek
+    // mencakup DKI + Bogor + Depok + Tangerang + Bekasi (kota & kab)
+    bbox: { minLon: 106.2948, maxLon: 107.4500, minLat: -6.9000, maxLat: -5.6024 },
+    color: '#a371f7',
+  },
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════
+let selected = new Set(['dki_jakarta']);
+let map = null;
+let layers = {};
+
+// ═══════════════════════════════════════════════════════════════════
+// INIT REGION GRID
+// ═══════════════════════════════════════════════════════════════════
+function initRegionGrid() {
+  const grid = document.getElementById('region-grid');
+  grid.innerHTML = REGIONS.map(r => `
+    <div class="region-card ${selected.has(r.id) ? 'selected' : ''}"
+         id="rc-${r.id}" onclick="toggleRegion('${r.id}')">
+      <div class="check">${selected.has(r.id) ? '✓' : ''}</div>
+      <div class="rc-name" style="color:${r.color}">${r.name}</div>
+      <div class="rc-sub">${r.sub}</div>
+      <div class="rc-area">📐 ${r.area}</div>
+    </div>
+  `).join('');
+}
+
+function toggleRegion(id) {
+  // Jabodetabek adalah special: select all atau deselect all
+  if (id === 'jabodetabek') {
+    if (selected.has('jabodetabek')) {
+      selected.clear();
+    } else {
+      selected.clear();
+      selected.add('jabodetabek');
+    }
+  } else {
+    // Deselect jabodetabek jika ada individual yang dipilih
+    selected.delete('jabodetabek');
+    if (selected.has(id)) {
+      selected.delete(id);
+    } else {
+      selected.add(id);
+    }
+    if (selected.size === 0) selected.add(id); // minimal 1
+  }
+  updateRegionUI();
+  updateMap();
+  updateBboxDisplay();
+}
+
+function updateRegionUI() {
+  REGIONS.forEach(r => {
+    const el = document.getElementById('rc-' + r.id);
+    const isSelected = selected.has(r.id);
+    el.classList.toggle('selected', isSelected);
+    el.querySelector('.check').textContent = isSelected ? '✓' : '';
+  });
+
+  const names = REGIONS.filter(r => selected.has(r.id)).map(r => r.name);
+  const sumEl = document.getElementById('sel-summary');
+  if (names.length > 0) {
+    sumEl.style.display = 'block';
+    sumEl.innerHTML = `✅ Wilayah dipilih: <strong>${names.join(', ')}</strong>`;
+  } else {
+    sumEl.style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// COMPUTE MERGED BBOX
+// ═══════════════════════════════════════════════════════════════════
+function getMergedBbox() {
+  const sel = REGIONS.filter(r => selected.has(r.id));
+  if (!sel.length) return null;
+  return {
+    minLon: Math.min(...sel.map(r => r.bbox.minLon)),
+    maxLon: Math.max(...sel.map(r => r.bbox.maxLon)),
+    minLat: Math.min(...sel.map(r => r.bbox.minLat)),
+    maxLat: Math.max(...sel.map(r => r.bbox.maxLat)),
+  };
+}
+
+function updateBboxDisplay() {
+  const b = getMergedBbox();
+  if (!b) return;
+  const wkt = `POLYGON((${b.minLon} ${b.minLat}, ${b.maxLon} ${b.minLat}, ${b.maxLon} ${b.maxLat}, ${b.minLon} ${b.maxLat}, ${b.minLon} ${b.minLat}))`;
+  document.getElementById('bbox-display').textContent = wkt;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP
+// ═══════════════════════════════════════════════════════════════════
+function initMap() {
+  map = L.map('map', {
+    center: [-6.21, 106.85],
+    zoom: 9,
+    zoomControl: true,
+  });
+
+  // Dark tile layer
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
+    maxZoom: 19,
+  }).addTo(map);
+
+  updateMap();
+}
+
+function updateMap() {
+  if (!map) return;
+
+  // Clear existing layers
+  Object.values(layers).forEach(l => map.removeLayer(l));
+  layers = {};
+
+  const selRegions = REGIONS.filter(r => selected.has(r.id));
+  const bounds = [];
+
+  selRegions.forEach(r => {
+    const b = r.bbox;
+    const rect = L.rectangle(
+      [[b.minLat, b.minLon], [b.maxLat, b.maxLon]],
+      {
+        color: r.color,
+        weight: 2,
+        fillOpacity: 0.12,
+        fillColor: r.color,
+        dashArray: r.id === 'jabodetabek' ? '6,3' : null,
+      }
+    ).addTo(map);
+
+    // Label
+    const center = [(b.minLat + b.maxLat) / 2, (b.minLon + b.maxLon) / 2];
+    const label = L.marker(center, {
+      icon: L.divIcon({
+        className: '',
+        html: `<div style="background:rgba(0,0,0,0.7);color:${r.color};padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid ${r.color}">${r.name}</div>`,
+        iconAnchor: [0, 0],
+      }),
+    }).addTo(map);
+
+    layers['rect-' + r.id] = rect;
+    layers['label-' + r.id] = label;
+    bounds.push([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
+  });
+
+  if (bounds.length > 0) {
+    map.fitBounds(bounds, { padding: [20, 20] });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DATE PREVIEW
+// ═══════════════════════════════════════════════════════════════════
+function updatePreview() {
+  const days = parseInt(document.getElementById('days-back').value);
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  const fmt = d => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+  document.getElementById('from-date').textContent = fmt(from);
+  // Sentinel-1 revisit: 6-12 hari → estimasi
+  const est = Math.round(days / 9);
+  document.getElementById('est-scenes').textContent = `±${est}`;
+}
+updatePreview();
+
+function toggleTimeMode(v) {
+  document.getElementById('mode-relative').style.display = v === 'relative' ? 'block' : 'none';
+  document.getElementById('mode-absolute').style.display = v === 'absolute' ? 'block' : 'none';
+}
+
+function updateOrbitLabels() {
+  const asc  = document.getElementById('orb-asc').checked;
+  const desc = document.getElementById('orb-desc').checked;
+  document.getElementById('orb-asc-lbl').style.borderColor  = asc  ? 'var(--green)' : 'var(--border)';
+  document.getElementById('orb-desc-lbl').style.borderColor = desc ? 'var(--green)' : 'var(--border)';
+}
+updateOrbitLabels();
+
+// ═══════════════════════════════════════════════════════════════════
+// QUALITY SCORE
+// ═══════════════════════════════════════════════════════════════════
+function updateScoreColor(v) {
+  const el = document.getElementById('min-score-val');
+  el.textContent = v + ' / 100';
+  el.style.color = v >= 75 ? 'var(--red)' : v >= 50 ? 'var(--amber)' : 'var(--green)';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SAVE
+// ═══════════════════════════════════════════════════════════════════
+function saveAll() {
+  const b = getMergedBbox();
+  const cfg = {
+    _meta: {
+      generated: new Date().toISOString(),
+      note: 'Generated by Sentinel-1 Pipeline Config UI. Apply to config/config.json.',
+      coord_source: 'Biro Pemerintahan Pemprov DKI Jakarta, BPS Indonesia, OpenStreetMap',
+    },
+    area: {
+      selected_regions: Array.from(selected),
+      merged_bbox: b,
+      bbox_wkt: b ? `POLYGON((${b.minLon} ${b.minLat}, ${b.maxLon} ${b.minLat}, ${b.maxLon} ${b.maxLat}, ${b.minLon} ${b.maxLat}, ${b.minLon} ${b.minLat}))` : null,
+      time_mode:   document.getElementById('time-mode').value,
+      days_back:   parseInt(document.getElementById('days-back').value),
+      date_from:   document.getElementById('date-from').value,
+      date_to:     document.getElementById('date-to').value,
+      orbit_ascending:  document.getElementById('orb-asc').checked,
+      orbit_descending: document.getElementById('orb-desc').checked,
+    },
+    pipeline: {
+      lee_window_size: parseInt(document.getElementById('lee-window').value),
+      lee_looks:       parseInt(document.getElementById('lee-looks').value),
+      cog_compression: document.getElementById('cog-compress').value,
+      cog_blocksize:   parseInt(document.getElementById('cog-block').value),
+      cog_convert_db:  document.getElementById('cog-db').value === 'true',
+      retry_count:     parseInt(document.getElementById('retry-count').value),
+      retry_delay_sec: parseInt(document.getElementById('retry-delay').value),
+    },
+    quality: {
+      min_quality_score:       parseInt(document.getElementById('min-score').value),
+      max_nodata_percent:      parseInt(document.getElementById('max-nodata').value),
+      cloud_threshold_percent: parseInt(document.getElementById('cloud-thresh').value),
+      alert_on_fail:    document.getElementById('alert-fail').checked,
+      alert_on_arrival: document.getElementById('alert-arrival').checked,
+      alert_on_error:   document.getElementById('alert-error').checked,
+    },
+  };
+
+  localStorage.setItem('sentinel1_cfg', JSON.stringify(cfg));
+  console.log('=== SENTINEL-1 CONFIG ===\n' + JSON.stringify(cfg, null, 2));
+
+  const now = new Date().toLocaleTimeString('id-ID');
+  document.getElementById('last-save-label').textContent = 'Disimpan ' + now;
+
+  ['area', 'pipeline', 'kualitas'].forEach(id => {
+    const el = document.getElementById('save-msg-' + id);
+    if (el) { el.style.display = 'inline'; setTimeout(() => el.style.display = 'none', 3000); }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════════════
+function go(tab, el) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  el.classList.add('active');
+  if (tab === 'area' && map) setTimeout(() => map.invalidateSize(), 50);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// API
+// ═══════════════════════════════════════════════════════════════════
+const API = 'http://localhost:8000';
+
+async function checkStatus() {
+  const el = document.getElementById('db-status');
+  try {
+    const r = await fetch(API + '/api/health', { signal: AbortSignal.timeout(2500) });
+    const d = await r.json();
+    if (d.db_connected) {
+      el.className = 'status-pill ok';
+      el.innerHTML = '<span class="dot"></span> DB Terhubung';
+    } else {
+      el.className = 'status-pill err';
+      el.innerHTML = '<span class="dot"></span> DB Error';
+    }
+  } catch {
+    el.className = 'status-pill err';
+    el.innerHTML = '<span class="dot"></span> API Offline';
+  }
+}
+
+async function testConn() {
+  const el = document.getElementById('conn-result');
+  el.innerHTML = '<span style="color:var(--muted)">⏳ Mengecek...</span>';
+  try {
+    const r = await fetch(API + '/api/health', { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    if (d.db_connected) {
+      el.innerHTML = `<div class="info-box success">✅ Koneksi OK — pool ${d.pool_size} koneksi, ${d.checked_out} aktif saat ini.</div>`;
+    } else {
+      el.innerHTML = `<div class="info-box warn">⚠️ API jalan tapi DB tidak terhubung. Cek DB_PASSWORD di file .env.</div>`;
+    }
+  } catch {
+    el.innerHTML = `<div class="info-box warn">❌ Tidak bisa hubungi API. Pastikan uvicorn berjalan:<br><code>uvicorn api.main:app --reload</code></div>`;
+  }
+}
+
+async function loadStatus() {
+  try {
+    const [sc, pr, ql] = await Promise.allSettled([
+      fetch(API + '/api/scenes?limit=1').then(r => r.json()),
+      fetch(API + '/api/products?tier=GOLD&limit=1').then(r => r.json()),
+      fetch(API + '/api/quality/summary/stats?n_days=365').then(r => r.json()),
+    ]);
+    if (sc.status === 'fulfilled')  document.getElementById('s-scenes').textContent = sc.value.total ?? '—';
+    if (pr.status === 'fulfilled')  document.getElementById('s-gold').textContent   = pr.value.total ?? '—';
+    if (ql.status === 'fulfilled') {
+      const f = ql.value.flags || {};
+      document.getElementById('s-pass').textContent   = f.PASS?.count ?? 0;
+      document.getElementById('s-alerts').textContent = (f.FAIL?.count ?? 0) + (f.WARNING?.count ?? 0);
+    }
+  } catch(e) { console.error(e); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════
+initRegionGrid();
+updateBboxDisplay();
+setTimeout(initMap, 50);
+checkStatus();
+loadStatus();
+setInterval(checkStatus, 10000);
+</script>
+</body>
+</html>

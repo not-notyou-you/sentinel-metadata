@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import socket
 from datetime import datetime, timedelta, timezone
-from typing import Any, Union
+from typing import Any
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -24,7 +24,6 @@ from etl.database_client import (
     DataProduct,
     DatabaseClient,
     JobStatusEnum,
-    OrbitDirectionEnum,
     ProcessingJob,
     ProcessingStage,
     ProductTierEnum,
@@ -34,38 +33,6 @@ from etl.database_client import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _to_enum(enum_cls, value: Union[str, "Enum"], param_name: str = "value") -> "Enum":
-    """
-    Convert a string or existing enum member to the target enum type.
-
-    Args:
-        enum_cls   : The target Enum class.
-        value      : String or existing member of enum_cls.
-        param_name : Parameter name for error messages.
-
-    Returns:
-        An instance of enum_cls.
-
-    Raises:
-        ValueError : If the string is not a valid member name.
-        TypeError  : If value is neither str nor enum_cls.
-    """
-    if isinstance(value, enum_cls):
-        return value
-    if isinstance(value, str):
-        try:
-            return enum_cls(value)
-        except ValueError:
-            valid = [e.value for e in enum_cls]
-            raise ValueError(
-                f"Invalid {param_name} '{value}'. Must be one of {valid}"
-            ) from None
-    raise TypeError(
-        f"{param_name} must be a string or {enum_cls.__name__}, "
-        f"got {type(value).__name__}"
-    )
 
 
 class MetadataManager:
@@ -120,9 +87,7 @@ class MetadataManager:
                 select(ProcessingStage).where(ProcessingStage.stage_name == stage_name)
             )
             if not stage:
-                raise ValueError(
-                    f"Unknown stage_name: '{stage_name}'. Check processing_stages table."
-                )
+                raise ValueError(f"Unknown stage_name: '{stage_name}'. Check processing_stages table.")
 
             job = ProcessingJob(
                 scene_id        = scene_id,
@@ -136,10 +101,8 @@ class MetadataManager:
             sess.flush()
             job_id = job.job_id
 
-        logger.info(
-            "[JOB] Created job_id=%d scene=%d stage=%s attempt=%d",
-            job_id, scene_id, stage_name, attempt_number,
-        )
+        logger.info("[JOB] Created job_id=%d scene=%d stage=%s attempt=%d",
+                    job_id, scene_id, stage_name, attempt_number)
         return job_id
 
     def start_job(self, job_id: int) -> None:
@@ -155,7 +118,7 @@ class MetadataManager:
     def complete_job(
         self,
         job_id: int,
-        status: Union[str, JobStatusEnum] = JobStatusEnum.SUCCESS,
+        status: JobStatusEnum = JobStatusEnum.SUCCESS,
         output_size_mb: float | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
@@ -171,19 +134,16 @@ class MetadataManager:
             error_code     : Structured error code if failed
             error_message  : Full traceback / error text if failed
         """
-        status_enum = _to_enum(JobStatusEnum, status, "status")
-
         with self._db.session() as sess:
             job = sess.get(ProcessingJob, job_id)
             if not job:
                 raise ValueError(f"job_id={job_id} not found")
-            job.status        = status_enum
+            job.status        = status
             job.completed_at  = datetime.now(tz=timezone.utc)
             job.output_size_mb = output_size_mb
             job.error_code    = error_code
             job.error_message = error_message
-
-        logger.info("[JOB] job_id=%d → %s", job_id, status_enum.value)
+        logger.info("[JOB] job_id=%d → %s", job_id, status.value)
 
     # ------------------------------------------------------------------
     # MODULE 1: SATELLITE SCENE REGISTRATION
@@ -195,7 +155,7 @@ class MetadataManager:
         acquisition_datetime: datetime,
         region_id: int,
         bbox_wkt: str,
-        orbit_direction: Union[str, OrbitDirectionEnum] = OrbitDirectionEnum.ASCENDING,
+        orbit_direction: str = "ASCENDING",
         polarization_vv: bool = True,
         polarization_vh: bool = True,
         orbit_number: int | None = None,
@@ -218,7 +178,7 @@ class MetadataManager:
             acquisition_datetime : UTC acquisition timestamp
             region_id            : FK to regions_of_interest
             bbox_wkt             : WKT polygon string (POLYGON((lon lat, ...)))
-            orbit_direction      : OrbitDirectionEnum or 'ASCENDING' / 'DESCENDING'
+            orbit_direction      : 'ASCENDING' or 'DESCENDING'
             polarization_vv      : VV band available
             polarization_vh      : VH band available
             orbit_number         : Absolute orbit number
@@ -239,8 +199,6 @@ class MetadataManager:
         Raises:
             ValueError : If scene already exists (duplicate product_identifier)
         """
-        orbit_enum = _to_enum(OrbitDirectionEnum, orbit_direction, "orbit_direction")
-
         with self._db.session() as sess:
             # Check for duplicate
             existing = sess.scalar(
@@ -249,10 +207,8 @@ class MetadataManager:
                 )
             )
             if existing:
-                logger.warning(
-                    "[SCENE] Duplicate scene skipped: %s (scene_id=%d)",
-                    product_identifier, existing,
-                )
+                logger.warning("[SCENE] Duplicate scene skipped: %s (scene_id=%d)",
+                               product_identifier, existing)
                 return existing
 
             scene = SatelliteScene(
@@ -260,7 +216,7 @@ class MetadataManager:
                 acquisition_datetime = acquisition_datetime,
                 region_id            = region_id,
                 bbox                 = f"SRID=4326;{bbox_wkt}",
-                orbit_direction      = orbit_enum,
+                orbit_direction      = orbit_direction,
                 polarization_vv      = polarization_vv,
                 polarization_vh      = polarization_vh,
                 orbit_number         = orbit_number,
@@ -280,10 +236,8 @@ class MetadataManager:
             sess.flush()
             scene_id = scene.scene_id
 
-        logger.info(
-            "[SCENE] Registered scene_id=%d pid=%s acq=%s",
-            scene_id, product_identifier, acquisition_datetime.isoformat(),
-        )
+        logger.info("[SCENE] Registered scene_id=%d pid=%s acq=%s",
+                    scene_id, product_identifier, acquisition_datetime.isoformat())
         return scene_id
 
     # ------------------------------------------------------------------
@@ -294,7 +248,7 @@ class MetadataManager:
         self,
         scene_id: int,
         job_id: int,
-        product_tier: Union[str, ProductTierEnum],
+        product_tier: str,
         product_type: str,
         band_name: str,
         file_path: str,
@@ -308,7 +262,7 @@ class MetadataManager:
         rows: int | None = None,
         cols: int | None = None,
         band_count: int = 1,
-        storage_location: Union[str, StorageLocationEnum] = StorageLocationEnum.LOCAL,
+        storage_location: str = "LOCAL",
     ) -> int:
         """
         Register an output product artifact (COG, filtered TIFF, cropped TIFF).
@@ -317,7 +271,7 @@ class MetadataManager:
         Args:
             scene_id         : Parent scene FK
             job_id           : Producing job FK
-            product_tier     : ProductTierEnum or tier string
+            product_tier     : 'RAW' | 'BRONZE' | 'SILVER' | 'GOLD'
             product_type     : 'CROPPED_TIFF' | 'LEE_FILTERED' | 'COG' etc.
             band_name        : 'VV' | 'VH' | 'VV_VH'
             file_path        : Full file storage path
@@ -331,21 +285,18 @@ class MetadataManager:
             rows             : Raster row count
             cols             : Raster column count
             band_count       : Number of bands in file
-            storage_location : StorageLocationEnum or location string
+            storage_location : 'LOCAL' | 'S3' | 'GCS' | 'AZURE_BLOB'
 
         Returns:
             product_id (int) of the newly registered product
         """
-        tier_enum = _to_enum(ProductTierEnum, product_tier, "product_tier")
-        location_enum = _to_enum(StorageLocationEnum, storage_location, "storage_location")
-
         # Mark older products for same scene/band/tier as not-latest
         with self._db.session() as sess:
             sess.query(DataProduct).filter(
                 and_(
                     DataProduct.scene_id     == scene_id,
                     DataProduct.band_name    == band_name,
-                    DataProduct.product_tier == tier_enum,
+                    DataProduct.product_tier == product_tier,
                     DataProduct.is_latest    == True,
                 )
             ).update({"is_latest": False})
@@ -353,7 +304,7 @@ class MetadataManager:
             product = DataProduct(
                 scene_id         = scene_id,
                 job_id           = job_id,
-                product_tier     = tier_enum,
+                product_tier     = ProductTierEnum(product_tier),
                 product_type     = product_type,
                 band_name        = band_name,
                 file_name        = file_name,
@@ -367,7 +318,7 @@ class MetadataManager:
                 rows             = rows,
                 cols             = cols,
                 band_count       = band_count,
-                storage_location = location_enum,
+                storage_location = StorageLocationEnum(storage_location),
                 is_valid         = True,
                 is_latest        = True,
             )
@@ -375,10 +326,8 @@ class MetadataManager:
             sess.flush()
             product_id = product.product_id
 
-        logger.info(
-            "[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s file=%s",
-            product_id, scene_id, band_name, tier_enum.value, file_name,
-        )
+        logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s file=%s",
+                    product_id, scene_id, band_name, product_tier, file_name)
         return product_id
 
     # ------------------------------------------------------------------
@@ -451,10 +400,8 @@ class MetadataManager:
             sess.flush()
             metric_id = metric.metric_id
 
-        logger.info(
-            "[QUALITY] metric_id=%d scene=%d band=%s score=%.2f flag=%s",
-            metric_id, scene_id, band_name, quality_score, quality_flag,
-        )
+        logger.info("[QUALITY] metric_id=%d scene=%d band=%s score=%.2f flag=%s",
+                    metric_id, scene_id, band_name, quality_score, quality_flag)
 
         # Auto-trigger alert on quality failure
         if quality_flag == "FAIL":
@@ -462,16 +409,11 @@ class MetadataManager:
                 event_type = AlertEventTypeEnum.QUALITY_WARNING,
                 severity   = AlertSeverityEnum.WARNING,
                 title      = f"Quality FAIL: scene={scene_id} band={band_name}",
-                message    = (
-                    f"Quality score {quality_score:.1f}/100 below threshold. "
-                    f"NoData={nodata_pixels}/{total_pixels} pixels."
-                ),
+                message    = (f"Quality score {quality_score:.1f}/100 below threshold. "
+                              f"NoData={nodata_pixels}/{total_pixels} pixels."),
                 scene_id   = scene_id,
-                metadata   = {
-                    "quality_score": quality_score,
-                    "band": band_name,
-                    "product_id": product_id,
-                },
+                metadata   = {"quality_score": quality_score, "band": band_name,
+                               "product_id": product_id},
             )
 
         return metric_id
@@ -482,10 +424,10 @@ class MetadataManager:
 
     def insert_alert_event(
         self,
-        event_type: Union[str, AlertEventTypeEnum],
+        event_type: AlertEventTypeEnum,
         title: str,
         message: str,
-        severity: Union[str, AlertSeverityEnum] = AlertSeverityEnum.INFO,
+        severity: AlertSeverityEnum = AlertSeverityEnum.INFO,
         scene_id: int | None = None,
         job_id: int | None = None,
         product_id: int | None = None,
@@ -495,10 +437,10 @@ class MetadataManager:
         Create a monitoring alert event.
 
         Args:
-            event_type  : AlertEventTypeEnum or event type string
+            event_type  : AlertEventTypeEnum value
             title       : Short alert title (shown in dashboards)
             message     : Full alert description
-            severity    : AlertSeverityEnum or severity string
+            severity    : INFO | WARNING | CRITICAL
             scene_id    : Related scene (optional)
             job_id      : Related job (optional)
             product_id  : Related product (optional)
@@ -507,13 +449,10 @@ class MetadataManager:
         Returns:
             alert_id (int)
         """
-        type_enum = _to_enum(AlertEventTypeEnum, event_type, "event_type")
-        severity_enum = _to_enum(AlertSeverityEnum, severity, "severity")
-
         with self._db.session() as sess:
             alert = AlertEvent(
-                event_type    = type_enum,
-                severity      = severity_enum,
+                event_type    = event_type,
+                severity      = severity,
                 scene_id      = scene_id,
                 job_id        = job_id,
                 product_id    = product_id,
@@ -526,11 +465,9 @@ class MetadataManager:
             sess.flush()
             alert_id = alert.alert_id
 
-        log_level = logging.WARNING if severity_enum != AlertSeverityEnum.INFO else logging.INFO
         logger.log(
-            log_level,
-            "[ALERT] alert_id=%d [%s] %s: %s",
-            alert_id, severity_enum.value, title, message,
+            logging.WARNING if severity != AlertSeverityEnum.INFO else logging.INFO,
+            "[ALERT] alert_id=%d [%s] %s: %s", alert_id, severity.value, title, message
         )
         return alert_id
 
@@ -583,6 +520,7 @@ class MetadataManager:
 
             rows = sess.execute(stmt).fetchall()
 
+            # Check GOLD product existence for each scene
             results = []
             for row in rows:
                 has_gold = False
@@ -605,16 +543,14 @@ class MetadataManager:
                     "scene_id":             row.scene_id,
                     "product_identifier":   row.product_identifier,
                     "acquisition_datetime": row.acquisition_datetime.isoformat(),
-                    "orbit_direction":      row.orbit_direction.value if row.orbit_direction else None,
+                    "orbit_direction":      row.orbit_direction,
                     "polarization_vv":      row.polarization_vv,
                     "polarization_vh":      row.polarization_vh,
                     "has_gold_product":     has_gold,
                 })
 
-        logger.info(
-            "[QUERY] latest_scenes n_days=%d region=%s results=%d",
-            n_days, region_id, len(results),
-        )
+        logger.info("[QUERY] latest_scenes n_days=%d region=%s results=%d",
+                    n_days, region_id, len(results))
         return results
 
     def get_scene_by_id(self, scene_id: int) -> dict | None:
@@ -637,7 +573,7 @@ class MetadataManager:
                 "polarization_vv":      scene.polarization_vv,
                 "polarization_vh":      scene.polarization_vh,
                 "acquisition_datetime": scene.acquisition_datetime.isoformat(),
-                "orbit_direction":      scene.orbit_direction.value,
+                "orbit_direction":      scene.orbit_direction,
                 "orbit_number":         scene.orbit_number,
                 "relative_orbit":       scene.relative_orbit,
                 "cloud_cover_percent":  float(scene.cloud_cover_percent) if scene.cloud_cover_percent else None,
@@ -679,30 +615,24 @@ class MetadataManager:
                 for m in metrics
             ]
 
-    def get_products_by_scene(
-        self,
-        scene_id: int,
-        tier: Union[str, ProductTierEnum, None] = None,
-        latest_only: bool = True,
-    ) -> list[dict]:
+    def get_products_by_scene(self, scene_id: int, tier: str | None = None,
+                               latest_only: bool = True) -> list[dict]:
         """
         Retrieve data products for a scene, optionally filtered by tier.
 
         Args:
             scene_id    : Parent scene
-            tier        : ProductTierEnum or tier string (RAW/BRONZE/SILVER/GOLD)
+            tier        : 'RAW' | 'BRONZE' | 'SILVER' | 'GOLD' (optional)
             latest_only : Return only is_latest=TRUE products
 
         Returns:
             List of product dicts
         """
-        tier_enum = _to_enum(ProductTierEnum, tier, "tier") if tier is not None else None
-
         with self._db.session() as sess:
             stmt = select(DataProduct).where(DataProduct.scene_id == scene_id)
 
-            if tier_enum:
-                stmt = stmt.where(DataProduct.product_tier == tier_enum)
+            if tier:
+                stmt = stmt.where(DataProduct.product_tier == ProductTierEnum(tier))
             if latest_only:
                 stmt = stmt.where(DataProduct.is_latest == True)
 
@@ -729,6 +659,47 @@ class MetadataManager:
                 }
                 for p in products
             ]
+
+    def get_scene_by_pid(self, product_identifier: str) -> dict | None:
+        """
+        Cari scene berdasarkan product_identifier (ESA product ID).
+        Dipakai scheduler untuk cek apakah scene sudah pernah diproses.
+
+        Args:
+            product_identifier : ESA product ID unik
+
+        Returns:
+            dict scene dengan tambahan key 'has_gold' (bool),
+            atau None jika scene belum ada di DB
+        """
+        with self._db.session() as sess:
+            scene = sess.scalar(
+                select(SatelliteScene).where(
+                    SatelliteScene.product_identifier == product_identifier
+                )
+            )
+            if not scene:
+                return None
+
+            # Cek apakah sudah ada GOLD product
+            has_gold = sess.scalar(
+                select(func.count(DataProduct.product_id)).where(
+                    and_(
+                        DataProduct.scene_id     == scene.scene_id,
+                        DataProduct.product_tier == ProductTierEnum.GOLD,
+                        DataProduct.is_latest    == True,
+                        DataProduct.is_valid     == True,
+                    )
+                )
+            ) > 0
+
+            return {
+                "scene_id":             scene.scene_id,
+                "product_identifier":   scene.product_identifier,
+                "acquisition_datetime": scene.acquisition_datetime.isoformat(),
+                "is_available":         scene.is_available,
+                "has_gold":             has_gold,
+            }
 
     def get_pipeline_status(self, scene_id: int) -> list[dict]:
         """

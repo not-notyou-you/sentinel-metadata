@@ -45,6 +45,8 @@ class SceneContext:
     product_identifier:  str
     region_id:           int
     raw_file_path:       str = ""
+    raw_vv_path:         str = ""
+    raw_vh_path:         str = ""
 
     # Job IDs per stage (filled as stages complete)
     job_ids: dict[str, int] = field(default_factory=dict)

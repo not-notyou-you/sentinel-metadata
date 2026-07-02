@@ -12,6 +12,11 @@ Run:
 
 from __future__ import annotations
 
+# ── Load .env PERTAMA, sebelum modul lain baca os.getenv() ──────────────────
+from dotenv import load_dotenv
+load_dotenv()
+# ────────────────────────────────────────────────────────────────────────────
+
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -85,7 +90,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],   # tighten in production
+    allow_origins     = ["*"],
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],
