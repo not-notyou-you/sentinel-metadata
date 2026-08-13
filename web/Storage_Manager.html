@@ -1,0 +1,367 @@
+<!-- web/Storage_Manager.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Storage - Sentinel Sentinel</title>
+<style>
+:root {
+  --bg: #0d1117; --s1: #161b22; --s2: #1c2128; --border: #30363d;
+  --text: #e6edf3; --muted: #7d8590;
+  --green: #3fb950; --gdim: #238636; --blue: #388bfd;
+  --amber: #d29922; --red: #f85149; --purple: #bc8cff;
+  --font: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+a { color: inherit; text-decoration: none; }
+
+.header {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(13,17,23,0.92); backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 20px;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: var(--green); }
+.nav { display: flex; gap: 4px; flex: 1; }
+.nav a { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--muted); }
+.nav a:hover { background: var(--s2); color: var(--text); }
+.nav a.current { color: var(--text); background: var(--s2); }
+.nav .tag { font-size: 9px; color: var(--purple); border: 1px solid var(--purple); border-radius: 4px; padding: 0 4px; margin-left: 2px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.pill.ok { background: #1a2d1e; color: var(--green); border: 1px solid #238636; }
+.pill.err { background: #2d1a1a; color: var(--red); border: 1px solid #6e1a1a; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.page { max-width: 1100px; margin: 0 auto; padding: 24px; }
+.section-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+.divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+.tier-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 24px; }
+.tier-card { background: var(--s1); border: 2px solid var(--border); border-radius: 10px; padding: 18px; transition: border-color .15s; }
+.tier-card:hover { border-color: var(--blue); }
+.tier-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.tier-name { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.tier-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.badge-raw { background: #2d1a1a; color: var(--red); }
+.badge-bronze { background: #2d2000; color: var(--amber); }
+.badge-silver { background: #0d1f3c; color: var(--blue); }
+.badge-gold { background: #2d2400; color: #ffd700; }
+.badge-partial { background: #1f1a2d; color: var(--purple); }
+.bar-wrap { height: 6px; background: var(--border); border-radius: 3px; margin-bottom: 14px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width .5s; }
+.tier-desc { font-size: 11px; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
+.tier-note { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; padding: 6px 10px; border-radius: 5px; margin-bottom: 12px; }
+.note-warn { background: #2d1f00; border: 1px solid #5c3d02; color: var(--amber); }
+.note-safe { background: #0d2d1a; border: 1px solid #238636; color: var(--green); }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; border: none; cursor: pointer; transition: all .12s; }
+.btn-danger { background: transparent; color: var(--red); border: 1px solid #3d1a1a; }
+.btn-danger:hover { background: #2d1a1a; }
+.btn-warn { background: transparent; color: var(--amber); border: 1px solid #3d2600; }
+.btn-warn:hover { background: #2d1f00; }
+.btn-ghost { background: var(--s2); color: var(--muted); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--border); color: var(--text); }
+.btn-green { background: var(--gdim); color: #fff; }
+.btn-green:hover { background: #2ea043; }
+
+.partial-card { background: var(--s1); border: 2px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 14px; }
+.all-card { background: var(--s1); border: 2px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 24px; }
+
+.result-log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 11px; max-height: 200px; overflow-y: auto; margin-top: 16px; }
+.log-line { margin-bottom: 3px; }
+.log-ok { color: var(--green); }
+.log-err { color: var(--red); }
+.log-warn { color: var(--amber); }
+.log-info { color: var(--muted); }
+
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center; z-index: 100; }
+.modal-overlay.show { display: flex; }
+.modal { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 440px; max-width: 90vw; }
+.modal h3 { font-size: 15px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.modal p { font-size: 13px; color: var(--muted); margin-bottom: 20px; line-height: 1.5; }
+.modal-warning { display: flex; gap: 8px; background: #2d1a1a; border: 1px solid #6e1a1a; color: var(--red); padding: 8px 12px; border-radius: 5px; font-size: 12px; margin-bottom: 16px; }
+.modal .btn-row { justify-content: flex-end; }
+
+.totals { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 24px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.total-item { text-align: center; }
+.total-val { font-size: 22px; font-weight: 700; }
+.total-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.total-sep { width: 1px; height: 40px; background: var(--border); }
+
+@media (max-width: 700px) {
+  .tier-grid { grid-template-columns: 1fr; }
+  .nav { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="brand" id="brand-icon"></div>
+  <nav class="nav" id="main-nav"></nav>
+  <div id="api-status" class="pill err"><span class="dot"></span><span>Offline</span></div>
+</div>
+
+<div class="page">
+  <div class="totals" id="totals-bar">
+    <div class="total-item"><div class="total-val" id="t-total" style="color:var(--blue)">-</div><div class="total-label">Total Storage</div></div>
+    <div class="total-sep"></div>
+    <div class="total-item"><div class="total-val" id="t-raw" style="color:var(--red)">-</div><div class="total-label">RAW</div></div>
+    <div class="total-sep"></div>
+    <div class="total-item"><div class="total-val" id="t-bronze" style="color:var(--amber)">-</div><div class="total-label">BRONZE</div></div>
+    <div class="total-sep"></div>
+    <div class="total-item"><div class="total-val" id="t-silver" style="color:var(--blue)">-</div><div class="total-label">SILVER</div></div>
+    <div class="total-sep"></div>
+    <div class="total-item"><div class="total-val" id="t-gold" style="color:#ffd700">-</div><div class="total-label">GOLD</div></div>
+    <div class="total-sep"></div>
+    <div class="total-item"><div class="total-val" id="t-partial" style="color:var(--purple)">-</div><div class="total-label">Download Terputus</div></div>
+  </div>
+
+  <div class="partial-card" id="partial-card">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div>
+        <div class="tier-name" id="partial-title"></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:5px" id="partial-desc"></div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:22px;font-weight:700;color:var(--purple)" id="partial-size">-</div>
+        <div style="font-size:11px;color:var(--muted)" id="partial-count">- file</div>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn btn-ghost" onclick="previewCleanup('partial')" id="partial-preview-btn"></button>
+      <button class="btn btn-warn" onclick="confirmCleanup('partial')" id="partial-delete-btn"></button>
+    </div>
+  </div>
+
+  <div class="section-title" id="tier-title"></div>
+  <div class="tier-grid" id="tier-grid"></div>
+
+  <div class="all-card">
+    <div class="section-title" id="all-title" style="margin-bottom:10px"></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px" id="all-desc"></div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="previewCleanup('all')" id="all-preview-btn"></button>
+      <button class="btn btn-warn" onclick="confirmCleanup('all')" id="all-delete-btn"></button>
+    </div>
+  </div>
+
+  <div class="section-title" id="log-title"></div>
+  <div class="result-log" id="log">
+    <div class="log-line log-info">Belum ada operasi</div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <p id="modal-body"></p>
+    <div id="modal-warning" class="modal-warning" style="display:none"></div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="closeModal()" id="modal-cancel-btn"></button>
+      <button class="btn btn-danger" id="modal-confirm-btn" onclick="executeCleanup()"></button>
+    </div>
+  </div>
+</div>
+
+<script src="/icons.js"></script>
+<script>
+const API = window.location.origin;
+let pendingTier = null;
+let totalMb = 1;
+
+const TIERS = [
+  { id: "raw", name: "RAW", badge: "badge-raw", badgeLabel: "ZIP asli", color: "var(--red)",
+    desc: "File ZIP download asli dari CDSE, dipakai untuk kalibrasi SNAP sebelum crop. Aman dihapus setelah tahap CROP selesai untuk scene tersebut.",
+    note: "warn", noteText: "Wajib ada saat awal untuk kalibrasi, hapus manual setelah CROP selesai" },
+  { id: "bronze", name: "BRONZE", badge: "badge-bronze", badgeLabel: "Crop AOI", color: "var(--amber)",
+    desc: "Citra setelah dikalibrasi dan dipotong ke area AOI Jabodetabek.",
+    note: "safe", noteText: "Aman dihapus jika GOLD sudah ada" },
+  { id: "silver", name: "SILVER", badge: "badge-silver", badgeLabel: "Lee Filter", color: "var(--blue)",
+    desc: "Citra setelah noise SAR dikurangi dengan Lee adaptive filter.",
+    note: "safe", noteText: "Aman dihapus jika GOLD sudah ada" },
+  { id: "gold", name: "GOLD", badge: "badge-gold", badgeLabel: "COG Final", color: "#ffd700",
+    desc: "Cloud-Optimized GeoTIFF production-ready, dipakai untuk analisis dan ML.",
+    note: "warn", noteText: "Hati-hati, ini data utama yang sudah siap pakai" },
+];
+
+function buildChrome() {
+  document.getElementById("brand-icon").innerHTML = Icons.svg("satellite", 18) + "<span>Sentinel Sentinel</span>";
+  document.getElementById("main-nav").innerHTML = `
+    <a href="/">${Icons.svg("pulse", 14)}<span>Beranda</span></a>
+    <a href="/Sentinel1Dashboard.html">${Icons.svg("grid", 14)}<span>Monitor</span></a>
+    <a href="/pipeline_config_ui.html">${Icons.svg("sliders", 14)}<span>Konfigurasi</span><span class="tag">admin</span></a>
+    <a href="/Storage_Manager.html" class="current">${Icons.svg("database", 14)}<span>Storage</span><span class="tag">admin</span></a>
+  `;
+  document.getElementById("partial-title").innerHTML = Icons.svg("alert", 16) + '<span>Download Terputus</span><span class="tier-badge badge-partial" style="margin-left:6px">.part</span>';
+  document.getElementById("partial-desc").innerHTML =
+    "File download yang berhenti di tengah jalan. Pipeline otomatis melanjutkan dari posisi terakhir saat dijalankan lagi. Hapus hanya jika yakin tidak mau melanjutkan.";
+  document.getElementById("partial-preview-btn").innerHTML = Icons.svg("search", 13) + "<span>Preview</span>";
+  document.getElementById("partial-delete-btn").innerHTML = Icons.svg("trash", 13) + "<span>Hapus file .part</span>";
+  document.getElementById("tier-title").innerHTML = Icons.svg("layers", 15) + "<span>Storage per Tahap</span>";
+  document.getElementById("all-title").innerHTML = Icons.svg("trash", 15) + "<span>Bersihkan Semua Sekaligus</span>";
+  document.getElementById("all-desc").innerHTML =
+    "Hapus RAW, BRONZE, dan SILVER sekaligus. GOLD tidak akan dihapus. Gunakan setelah pipeline selesai dan GOLD sudah terverifikasi.";
+  document.getElementById("all-preview-btn").innerHTML = Icons.svg("search", 13) + "<span>Preview semua</span>";
+  document.getElementById("all-delete-btn").innerHTML = Icons.svg("trash", 13) + "<span>Hapus RAW+BRONZE+SILVER</span>";
+  document.getElementById("log-title").innerHTML = Icons.svg("info", 15) + "<span>Log Operasi</span>";
+  document.getElementById("modal-cancel-btn").innerHTML = "<span>Batal</span>";
+  document.getElementById("modal-confirm-btn").innerHTML = Icons.svg("trash", 13) + "<span>Hapus</span>";
+
+  document.getElementById("tier-grid").innerHTML = TIERS.map((t) => `
+    <div class="tier-card" id="card-${t.id}">
+      <div class="tier-header">
+        <div class="tier-name">${t.name}<span class="tier-badge ${t.badge}">${t.badgeLabel}</span></div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:700;color:${t.color}" id="${t.id}-size">-</div>
+          <div style="font-size:11px;color:var(--muted)" id="${t.id}-count">- file</div>
+        </div>
+      </div>
+      <div class="bar-wrap"><div class="bar-fill" id="${t.id}-bar" style="background:${t.color};width:0%"></div></div>
+      <div class="tier-desc">${t.desc}</div>
+      <div class="tier-note ${t.note === "warn" ? "note-warn" : "note-safe"}">${Icons.svg(t.note === "warn" ? "alert" : "check", 13)}<span>${t.noteText}</span></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost" onclick="previewCleanup('${t.id}')">${Icons.svg("search", 13)}<span>Preview</span></button>
+        <button class="btn btn-danger" onclick="confirmCleanup('${t.id}')">${Icons.svg("trash", 13)}<span>Hapus ${t.name}</span></button>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function checkApi() {
+  const el = document.getElementById("api-status");
+  try {
+    const r = await fetch(API + "/api/health", { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    el.className = d.db_connected ? "pill ok" : "pill err";
+    el.innerHTML = `<span class="dot"></span><span>${d.db_connected ? "Online" : "DB Error"}</span>`;
+  } catch (e) {
+    el.className = "pill err";
+    el.innerHTML = '<span class="dot"></span><span>Offline</span>';
+  }
+}
+
+async function loadAll() {
+  addLog("info", "Memuat data storage");
+  try {
+    const r = await fetch(API + "/api/storage/summary");
+    if (!r.ok) throw new Error("API error " + r.status);
+    const d = await r.json();
+    totalMb = d.total.mb || 1;
+
+    set("t-total", d.total.human);
+    set("t-raw", d.tiers.raw.human);
+    set("t-bronze", d.tiers.bronze.human);
+    set("t-silver", d.tiers.silver.human);
+    set("t-gold", d.tiers.gold.human);
+    set("t-partial", d.partial_downloads.human);
+
+    TIERS.forEach((t) => updateTierCard(t.id, d.tiers[t.id]));
+
+    set("partial-size", d.partial_downloads.human);
+    set("partial-count", d.partial_downloads.file_count + " file .part");
+
+    addLog("ok", "Storage dimuat, total " + d.total.human);
+  } catch (e) {
+    addLog("err", "Gagal memuat storage: " + e.message);
+  }
+}
+
+function updateTierCard(tier, data) {
+  if (!data) return;
+  set(`${tier}-size`, data.human);
+  set(`${tier}-count`, data.file_count + " file");
+  const bar = document.getElementById(`${tier}-bar`);
+  if (bar) bar.style.width = Math.min(100, (data.mb / totalMb) * 100) + "%";
+}
+
+async function previewCleanup(tier) {
+  addLog("info", `Preview cleanup tahap ${tier}`);
+  try {
+    const r = await fetch(API + "/api/storage/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tier, dry_run: true }),
+    });
+    const d = await r.json();
+    addLog("warn", `Preview [${tier.toUpperCase()}]: ${d.files_deleted} file, ${d.size_freed_human} akan dibebaskan`);
+  } catch (e) {
+    addLog("err", "Preview gagal: " + e.message);
+  }
+}
+
+function confirmCleanup(tier) {
+  pendingTier = tier;
+  const labels = {
+    raw: ["Hapus semua file RAW", "ZIP dan TIF mentah akan dihapus permanen."],
+    bronze: ["Hapus semua file BRONZE", "File crop akan dihapus."],
+    silver: ["Hapus semua file SILVER", "File Lee filter akan dihapus."],
+    gold: ["Hapus semua file GOLD", "GOLD adalah output akhir yang siap pakai. Hapus hanya jika benar-benar tidak diperlukan lagi."],
+    partial: ["Hapus semua file .part", "File yang dihapus tidak bisa dilanjutkan, pipeline harus download ulang."],
+    all: ["Hapus RAW, BRONZE, SILVER", "Hanya GOLD yang tersisa."],
+  };
+  const [title, body] = labels[tier] || ["Hapus", ""];
+  document.getElementById("modal-title").innerHTML = Icons.svg("alert", 16) + `<span>${title}</span>`;
+  document.getElementById("modal-body").textContent = body;
+  const warn = document.getElementById("modal-warning");
+  if (tier === "gold") {
+    warn.style.display = "flex";
+    warn.innerHTML = Icons.svg("alert", 14) + "<span>Ini tidak bisa dibatalkan. Pastikan GOLD sudah aman sebelum melanjutkan.</span>";
+  } else {
+    warn.style.display = "none";
+  }
+  document.getElementById("modal").classList.add("show");
+}
+
+function closeModal() {
+  document.getElementById("modal").classList.remove("show");
+  pendingTier = null;
+}
+
+async function executeCleanup() {
+  const tier = pendingTier;
+  closeModal();
+  if (!tier) return;
+  addLog("warn", `Menghapus tahap ${tier}`);
+  try {
+    const r = await fetch(API + "/api/storage/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tier, dry_run: false }),
+    });
+    const d = await r.json();
+    if (d.errors && d.errors.length > 0) d.errors.forEach((e) => addLog("err", e));
+    addLog("ok", `Selesai [${tier.toUpperCase()}]: ${d.files_deleted} file dihapus, ${d.size_freed_human} dibebaskan`);
+    await loadAll();
+  } catch (e) {
+    addLog("err", "Cleanup gagal: " + e.message);
+  }
+}
+
+function addLog(type, msg) {
+  const panel = document.getElementById("log");
+  if (panel.children.length === 1 && panel.children[0].textContent.includes("Belum ada")) panel.innerHTML = "";
+  const line = document.createElement("div");
+  line.className = `log-line log-${type}`;
+  line.textContent = `[${new Date().toLocaleTimeString("id-ID")}] ${msg}`;
+  panel.appendChild(line);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function set(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+document.getElementById("modal").addEventListener("click", function (e) {
+  if (e.target === this) closeModal();
+});
+
+buildChrome();
+checkApi();
+loadAll();
+setInterval(checkApi, 15000);
+</script>
+</body>
+</html>

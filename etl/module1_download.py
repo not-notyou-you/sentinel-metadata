@@ -1,18 +1,4 @@
 # etl/module1_download.py
-"""
-Module 1: Sentinel-1 Download via Copernicus Data Space Ecosystem (CDSE).
-
-SciHub (scihub.copernicus.eu) SUDAH DITUTUP PERMANEN sejak November 2023.
-Platform baru: https://dataspace.copernicus.eu
-Library baru : cdsetool (pip install cdsetool)
-
-Akun yang sama dari dataspace.copernicus.eu bisa langsung dipakai.
-Daftar gratis: https://dataspace.copernicus.eu (klik Register)
-
-Author : Julius Marselinus (BRONTO) - NIM 00000111989
-Program: Sistem Informasi - Universitas Multimedia Nusantara
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -27,47 +13,35 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Hasil download satu scene
-# ---------------------------------------------------------------------------
-
 @dataclass
 class DownloadResult:
-    product_identifier:   str
-    zip_path:             str       # path ZIP (kosong jika keep_raw=False)
-    vv_tif_path:          str
-    vh_tif_path:          str
-    file_size_mb:         float
-    checksum_md5:         str
+    product_identifier: str
+    zip_path: str
+    vv_tif_path: str
+    vh_tif_path: str
+    file_size_mb: float
+    checksum_md5: str
     acquisition_datetime: datetime
-    orbit_direction:      str
-    orbit_number:         int | None
-    relative_orbit:       int | None
-    cloud_cover:          float | None
-    incidence_near:       float | None
-    incidence_far:        float | None
-    download_url:         str = ""
-    kept_raw:             bool = False
+    orbit_direction: str
+    orbit_number: int | None
+    relative_orbit: int | None
+    cloud_cover: float | None
+    incidence_near: float | None
+    incidence_far: float | None
+    download_url: str = ""
+    kept_raw: bool = False
 
-
-# ---------------------------------------------------------------------------
-# Auth: dapatkan access token dari CDSE via Keycloak
-# ---------------------------------------------------------------------------
 
 def _get_cdse_token(user: str, password: str) -> str:
-    """
-    Ambil OAuth2 access token dari CDSE Keycloak.
-    Token berlaku ~10 menit, dipakai untuk download.
-    """
     import requests
 
     r = requests.post(
         "https://identity.dataspace.copernicus.eu/auth/realms/CDSE"
         "/protocol/openid-connect/token",
         data={
-            "client_id":  "cdse-public",
-            "username":   user,
-            "password":   password,
+            "client_id": "cdse-public",
+            "username": user,
+            "password": password,
             "grant_type": "password",
         },
         timeout=30,
@@ -81,47 +55,22 @@ def _get_cdse_token(user: str, password: str) -> str:
     return r.json()["access_token"]
 
 
-# ---------------------------------------------------------------------------
-# Query CDSE OData catalogue
-# ---------------------------------------------------------------------------
-
 def discover_scenes(
-    bbox_wkt:        str,
-    date_from:       datetime,
-    date_to:         datetime,
+    bbox_wkt: str,
+    date_from: datetime,
+    date_to: datetime,
     orbit_direction: str | None = None,
-    max_results:     int        = 50,
-    product_type:    str        = "GRD",
-    instrument_mode: str        = "IW",
+    max_results: int = 50,
+    product_type: str = "GRD",
+    instrument_mode: str = "IW",
 ) -> list[dict]:
-    """
-    Query Copernicus Data Space Ecosystem untuk Sentinel-1 scenes.
-
-    Menggunakan OData REST API (tidak perlu library khusus, hanya requests).
-
-    Args:
-        bbox_wkt        : WKT polygon AOI, misal POLYGON((lon lat, ...))
-        date_from       : Awal rentang akuisisi (UTC)
-        date_to         : Akhir rentang akuisisi (UTC)
-        orbit_direction : 'ASCENDING', 'DESCENDING', atau None untuk keduanya
-        max_results     : Batas jumlah scene
-        product_type    : 'GRD' (ground range detected)
-        instrument_mode : 'IW' (interferometric wide swath)
-
-    Returns:
-        List dict per scene:
-            product_identifier, acquisition_datetime, orbit_direction,
-            orbit_number, relative_orbit, size_mb, download_url, _id
-    """
     import requests
 
-    # CDSE OData filter
     dt_from = date_from.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    dt_to   = date_to.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    dt_to = date_to.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-    # Build filter string
     filters = [
-        f"Collection/Name eq 'SENTINEL-1'",
+        "Collection/Name eq 'SENTINEL-1'",
         f"OData.CSC.Intersects(area=geography'SRID=4326;{bbox_wkt}')",
         f"ContentDate/Start gt {dt_from}",
         f"ContentDate/Start lt {dt_to}",
@@ -146,10 +95,7 @@ def discover_scenes(
         "&$expand=Attributes"
     )
 
-    logger.info(
-        "[M1] Querying CDSE: area=%s... from=%s to=%s",
-        bbox_wkt[:40], date_from.date(), date_to.date()
-    )
+    logger.info("[M1] Querying CDSE: area=%s... from=%s to=%s", bbox_wkt[:40], date_from.date(), date_to.date())
 
     r = requests.get(url, timeout=60)
     if r.status_code != 200:
@@ -160,7 +106,6 @@ def discover_scenes(
 
     results = []
     for item in items:
-        # Parse attributes
         attrs = {a["Name"]: a.get("Value") for a in item.get("Attributes", [])}
         acq_raw = item.get("ContentDate", {}).get("Start", "")
         try:
@@ -171,145 +116,119 @@ def discover_scenes(
         results.append({
             "product_identifier": item.get("Name", item.get("Id", "")),
             "acquisition_datetime": acq_dt,
-            "orbit_direction":  attrs.get("orbitDirection", "ASCENDING").upper(),
-            "orbit_number":     attrs.get("absoluteOrbit"),
-            "relative_orbit":   attrs.get("relativeOrbit"),
-            "cloud_cover":      attrs.get("cloudCover"),
-            "size_mb":          item.get("ContentLength", 0) / (1024 ** 2),
-            "download_url":     f"https://download.dataspace.copernicus.eu/odata/v1/Products({item['Id']})/$value",
-            "_id":              item["Id"],
+            "orbit_direction": attrs.get("orbitDirection", "ASCENDING").upper(),
+            "orbit_number": attrs.get("absoluteOrbit"),
+            "relative_orbit": attrs.get("relativeOrbit"),
+            "cloud_cover": attrs.get("cloudCover"),
+            "size_mb": item.get("ContentLength", 0) / (1024 ** 2),
+            "download_url": f"https://download.dataspace.copernicus.eu/odata/v1/Products({item['Id']})/$value",
+            "_id": item["Id"],
         })
 
     return results
 
 
-# ---------------------------------------------------------------------------
-# Download satu scene
-# ---------------------------------------------------------------------------
-
 def download_scene(
     scene_meta: dict,
-    output_dir: str  = "recovered_temp",
-    keep_raw:   bool = False,
+    output_dir: str = "recovered_temp",
+    keep_raw: bool = False,
 ) -> DownloadResult:
-    """
-    Download satu Sentinel-1 scene dari CDSE dan ekstrak band VV + VH.
-
-    Args:
-        scene_meta  : Dict dari discover_scenes()
-        output_dir  : Direktori output TIF hasil ekstraksi
-        keep_raw    : Jika False (default), ZIP ~800 MB dihapus setelah ekstrak
-
-    Returns:
-        DownloadResult dengan path VV dan VH TIF
-    """
     import requests
 
     user = os.getenv("COPERNICUS_USER")
-    pwd  = os.getenv("COPERNICUS_PASSWORD")
+    pwd = os.getenv("COPERNICUS_PASSWORD")
     if not user or not pwd:
         raise RuntimeError(
             "COPERNICUS_USER dan COPERNICUS_PASSWORD harus ada di .env\n"
             "Daftar gratis: https://dataspace.copernicus.eu"
         )
 
-    out   = Path(output_dir)
+    out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    name  = scene_meta["product_identifier"]
-    url   = scene_meta["download_url"]
-
-    logger.info("[M1] Downloading: %s (%.0f MB)", name[:50], scene_meta.get("size_mb", 0))
-
-    # Dapatkan token OAuth2 CDSE
-    token    = _get_cdse_token(user, pwd)
+    name = scene_meta["product_identifier"]
+    url = scene_meta["download_url"]
     zip_path = out / f"{name}.zip"
 
-    # Buat session dengan token — penting: session menyimpan token saat redirect
-    # CDSE redirect dari catalogue → download domain, token harus ikut
-    session = requests.Session()
-    session.headers.update({"Authorization": f"Bearer {token}"})
+    if zip_path.exists():
+        logger.info("[M1] ZIP sudah ada di disk, lewati download: %s", zip_path.name)
+        file_size_mb = zip_path.stat().st_size / (1024 ** 2)
+    else:
+        logger.info("[M1] Downloading: %s (%.0f MB)", name[:50], scene_meta.get("size_mb", 0))
 
-    # Ganti URL ke download domain yang benar
-    # catalogue.dataspace → download.dataspace
-    download_url = url.replace(
-        "catalogue.dataspace.copernicus.eu",
-        "download.dataspace.copernicus.eu"
-    )
+        token = _get_cdse_token(user, pwd)
 
-    # ── Resume download support ────────────────────────────────────────────
-    # File sementara: nama.zip.part — diteruskan jika sudah ada (resume)
-    part_path   = out / f"{name}.zip.part"
-    resume_from = part_path.stat().st_size if part_path.exists() else 0
+        session = requests.Session()
+        session.headers.update({"Authorization": f"Bearer {token}"})
 
-    if resume_from > 0:
-        logger.info("[M1] Melanjutkan download dari %.0f MB...", resume_from / 1e6)
-        session.headers.update({"Range": f"bytes={resume_from}-"})
+        download_url = url.replace(
+            "catalogue.dataspace.copernicus.eu",
+            "download.dataspace.copernicus.eu"
+        )
 
-    MAX_RETRIES = 3
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            with session.get(download_url, stream=True, timeout=600,
-                             allow_redirects=True) as resp:
-                if resp.status_code == 401:
-                    logger.info("[M1] Token expired, refreshing (attempt %d)...", attempt)
-                    token = _get_cdse_token(user, pwd)
-                    session.headers.update({"Authorization": f"Bearer {token}"})
-                    continue  # retry loop
+        part_path = out / f"{name}.zip.part"
+        resume_from = part_path.stat().st_size if part_path.exists() else 0
 
-                if resp.status_code == 416:
-                    # Range not satisfiable = file sudah complete di .part
-                    logger.info("[M1] File sudah lengkap di .part, rename saja.")
+        if resume_from > 0:
+            logger.info("[M1] Melanjutkan download dari %.0f MB...", resume_from / 1e6)
+            session.headers.update({"Range": f"bytes={resume_from}-"})
+
+        MAX_RETRIES = 3
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                with session.get(download_url, stream=True, timeout=600, allow_redirects=True) as resp:
+                    if resp.status_code == 401:
+                        logger.info("[M1] Token expired, refreshing (attempt %d)...", attempt)
+                        token = _get_cdse_token(user, pwd)
+                        session.headers.update({"Authorization": f"Bearer {token}"})
+                        continue
+
+                    if resp.status_code == 416:
+                        logger.info("[M1] File sudah lengkap di .part, rename saja.")
+                        part_path.rename(zip_path)
+                        break
+
+                    resp.raise_for_status()
+
+                    total = int(resp.headers.get("Content-Length", 0)) + resume_from
+                    downloaded = resume_from
+                    write_mode = "ab" if resume_from > 0 else "wb"
+
+                    with open(part_path, write_mode) as fout:
+                        for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                            if chunk:
+                                fout.write(chunk)
+                                downloaded += len(chunk)
+                                if total:
+                                    pct = downloaded / total * 100
+                                    if downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                                        logger.info("[M1] Download: %.0f%%  (%.0f / %.0f MB)", pct, downloaded / 1e6, total / 1e6)
+
                     part_path.rename(zip_path)
+                    logger.info("[M1] Download selesai.")
                     break
 
-                resp.raise_for_status()
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                if attempt < MAX_RETRIES:
+                    logger.warning("[M1] Download terputus (attempt %d/%d): %s. Retry...", attempt, MAX_RETRIES, exc)
+                    if part_path.exists():
+                        resume_from = part_path.stat().st_size
+                        session.headers.update({"Range": f"bytes={resume_from}-"})
+                        logger.info("[M1] Akan resume dari %.0f MB", resume_from / 1e6)
+                else:
+                    logger.error("[M1] Download gagal setelah %d attempts: %s", MAX_RETRIES, exc)
+                    logger.info("[M1] File .part tersimpan di: %s", part_path)
+                    raise
 
-                total      = int(resp.headers.get("Content-Length", 0)) + resume_from
-                downloaded = resume_from
-                write_mode = "ab" if resume_from > 0 else "wb"
+        if not zip_path.exists():
+            raise RuntimeError(f"Download tidak lengkap. Cek file: {part_path}")
 
-                with open(part_path, write_mode) as fout:
-                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                        if chunk:
-                            fout.write(chunk)
-                            downloaded += len(chunk)
-                            if total:
-                                pct = downloaded / total * 100
-                                if downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
-                                    logger.info("[M1] Download: %.0f%%  (%.0f / %.0f MB)",
-                                                pct, downloaded / 1e6, total / 1e6)
+        file_size_mb = zip_path.stat().st_size / (1024 ** 2)
+        logger.info("[M1] Download selesai: %.1f MB", file_size_mb)
 
-                # Selesai — rename .part → .zip
-                part_path.rename(zip_path)
-                logger.info("[M1] Download selesai.")
-                break
-
-        except (ConnectionError, TimeoutError, OSError) as exc:
-            if attempt < MAX_RETRIES:
-                logger.warning("[M1] Download terputus (attempt %d/%d): %s. Retry...",
-                               attempt, MAX_RETRIES, exc)
-                # Update resume_from untuk attempt berikutnya
-                if part_path.exists():
-                    resume_from = part_path.stat().st_size
-                    session.headers.update({"Range": f"bytes={resume_from}-"})
-                    logger.info("[M1] Akan resume dari %.0f MB", resume_from / 1e6)
-            else:
-                logger.error("[M1] Download gagal setelah %d attempts: %s", MAX_RETRIES, exc)
-                # .part file TETAP ADA — bisa dilanjutkan di run berikutnya
-                logger.info("[M1] File .part tersimpan di: %s", part_path)
-                raise
-
-    if not zip_path.exists():
-        raise RuntimeError(f"Download tidak lengkap. Cek file: {part_path}")
-
-    file_size_mb = zip_path.stat().st_size / (1024 ** 2)
     checksum_md5 = _md5(zip_path)
-    logger.info("[M1] Download selesai: %.1f MB", file_size_mb)
 
-    # Ekstrak band VV dan VH
     vv_path, vh_path = _extract_bands(zip_path, out)
 
-    # Hapus ZIP jika keep_raw=False
     if not keep_raw:
         zip_path.unlink()
         logger.info("[M1] ZIP dihapus (keep_raw=False). Dihemat %.1f MB.", file_size_mb)
@@ -319,69 +238,45 @@ def download_scene(
         logger.info("[M1] ZIP disimpan (keep_raw=True): %s", zip_stored)
 
     return DownloadResult(
-        product_identifier   = name,
-        zip_path             = zip_stored,
-        vv_tif_path          = str(vv_path),
-        vh_tif_path          = str(vh_path),
-        file_size_mb         = file_size_mb,
-        checksum_md5         = checksum_md5,
-        acquisition_datetime = scene_meta["acquisition_datetime"],
-        orbit_direction      = scene_meta.get("orbit_direction", "ASCENDING"),
-        orbit_number         = scene_meta.get("orbit_number"),
-        relative_orbit       = scene_meta.get("relative_orbit"),
-        cloud_cover          = scene_meta.get("cloud_cover"),
-        incidence_near       = None,
-        incidence_far        = None,
-        download_url         = url,
-        kept_raw             = keep_raw,
+        product_identifier=name,
+        zip_path=zip_stored,
+        vv_tif_path=str(vv_path),
+        vh_tif_path=str(vh_path),
+        file_size_mb=file_size_mb,
+        checksum_md5=checksum_md5,
+        acquisition_datetime=scene_meta["acquisition_datetime"],
+        orbit_direction=scene_meta.get("orbit_direction", "ASCENDING"),
+        orbit_number=scene_meta.get("orbit_number"),
+        relative_orbit=scene_meta.get("relative_orbit"),
+        cloud_cover=scene_meta.get("cloud_cover"),
+        incidence_near=None,
+        incidence_far=None,
+        download_url=url,
+        kept_raw=keep_raw,
     )
 
 
-# ---------------------------------------------------------------------------
-# Ekstrak band dari SAFE ZIP
-# ---------------------------------------------------------------------------
-
 def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
-    """
-    Ekstrak hanya band VV dan VH TIFF dari arsip .SAFE Sentinel-1.
-
-    Struktur di dalam ZIP:
-      S1A_IW_GRDH_....SAFE/
-        measurement/
-          s1a-iw-grd-vv-....tiff   ← VV band
-          s1a-iw-grd-vh-....tiff   ← VH band
-    """
     logger.info("[M1] Mengekstrak band dari %s", zip_path.name)
-
-    extract_dir = output_dir / zip_path.stem
-    extract_dir.mkdir(exist_ok=True)
-
     with zipfile.ZipFile(zip_path, "r") as zf:
         all_files = zf.namelist()
-        vv_files  = [f for f in all_files
-                     if "/measurement/" in f and "-vv-" in f.lower() and f.endswith(".tiff")]
-        vh_files  = [f for f in all_files
-                     if "/measurement/" in f and "-vh-" in f.lower() and f.endswith(".tiff")]
-
+        vv_files = [f for f in all_files
+                    if "/measurement/" in f and "-vv-" in f.lower() and f.endswith(".tiff")]
+        vh_files = [f for f in all_files
+                    if "/measurement/" in f and "-vh-" in f.lower() and f.endswith(".tiff")]
         if not vv_files:
             raise RuntimeError(f"Band VV tidak ditemukan dalam {zip_path.name}")
         if not vh_files:
             raise RuntimeError(f"Band VH tidak ditemukan dalam {zip_path.name}")
 
-        for fname in vv_files + vh_files:
-            zf.extract(fname, extract_dir)
+        stem = zip_path.stem[:35]
+        vv_out = output_dir / f"{stem}_VV.tif"
+        vh_out = output_dir / f"{stem}_VH.tif"
 
-    vv_raw = next(extract_dir.rglob("*-vv-*.tiff"))
-    vh_raw = next(extract_dir.rglob("*-vh-*.tiff"))
-
-    # Nama yang lebih pendek dan readable
-    stem   = zip_path.stem[:35]
-    vv_out = output_dir / f"{stem}_VV.tif"
-    vh_out = output_dir / f"{stem}_VH.tif"
-
-    shutil.move(str(vv_raw), str(vv_out))
-    shutil.move(str(vh_raw), str(vh_out))
-    shutil.rmtree(extract_dir, ignore_errors=True)
+        with zf.open(vv_files[0]) as src, open(vv_out, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        with zf.open(vh_files[0]) as src, open(vh_out, "wb") as dst:
+            shutil.copyfileobj(src, dst)
 
     logger.info("[M1] Ekstraksi selesai: VV=%s | VH=%s", vv_out.name, vh_out.name)
     return vv_out, vh_out
@@ -395,34 +290,15 @@ def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# Entry point (dipanggil scheduler)
-# ---------------------------------------------------------------------------
-
 def run(
-    bbox_wkt:        str,
-    date_from:       datetime,
-    date_to:         datetime,
-    output_dir:      str       = "recovered_temp",
+    bbox_wkt: str,
+    date_from: datetime,
+    date_to: datetime,
+    output_dir: str = "recovered_temp",
     orbit_direction: str | None = None,
-    keep_raw:        bool      = False,
-    max_scenes:      int       = 50,
+    keep_raw: bool = False,
+    max_scenes: int = 50,
 ) -> list[DownloadResult]:
-    """
-    Discover + download semua scene baru untuk area dan rentang waktu tertentu.
-
-    Args:
-        bbox_wkt        : WKT polygon AOI
-        date_from       : Awal periode
-        date_to         : Akhir periode
-        output_dir      : Direktori output TIF
-        orbit_direction : 'ASCENDING', 'DESCENDING', atau None (keduanya)
-        keep_raw        : Simpan ZIP asli? Default False
-        max_scenes      : Batas scene per run
-
-    Returns:
-        List DownloadResult
-    """
     scenes = discover_scenes(
         bbox_wkt=bbox_wkt,
         date_from=date_from,
@@ -443,7 +319,7 @@ def run(
             result = download_scene(scene, output_dir=output_dir, keep_raw=keep_raw)
             results.append(result)
         except Exception as exc:
-            logger.error("[M1] Gagal: %s → %s", pid[:40], exc)
+            logger.error("[M1] Gagal: %s -> %s", pid[:40], exc)
 
     logger.info("[M1] Selesai: %d/%d berhasil.", len(results), len(scenes))
     return results

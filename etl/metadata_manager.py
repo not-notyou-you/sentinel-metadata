@@ -1,11 +1,5 @@
 # etl/metadata_manager.py
-"""
-Metadata management layer: insert and query operations for all pipeline entities.
-Called by ETL modules after each processing stage completes.
 
-Author : Julius Marselinus (BRONTO) - NIM 00000111989
-Program: Sistem Informasi - Universitas Multimedia Nusantara
-"""
 
 from __future__ import annotations
 

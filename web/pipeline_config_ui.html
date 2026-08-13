@@ -1,9 +1,10 @@
+<!-- web/pipeline_config_ui.html -->
 <!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sentinel-1 Pipeline Config</title>
+<title>Konfigurasi Pipeline</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
   :root {
@@ -11,13 +12,28 @@
     --border: #30363d; --text: #e6edf3; --muted: #7d8590;
     --green: #3fb950; --green-dim: #238636;
     --blue: #388bfd; --blue-dim: #1f4a8a;
-    --amber: #d29922; --red: #f85149;
+    --amber: #d29922; --red: #f85149; --purple: #bc8cff;
     --radius: 8px; --font: system-ui, -apple-system, sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.6; }
+  a { color: inherit; text-decoration: none; }
+  svg { display: block; }
 
-  /* Top bar */
+  .topnav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(13,17,23,0.92); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border); padding: 10px 20px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .topnav .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+  .topnav .brand svg { color: var(--blue); }
+  .topnav nav { display: flex; gap: 4px; flex: 1; }
+  .topnav a { padding: 5px 10px; border-radius: 6px; font-size: 12px; color: var(--muted); }
+  .topnav a:hover { background: var(--surface2); color: var(--text); }
+  .topnav a.current { background: var(--surface2); color: var(--text); }
+  .topnav .tag { font-size: 9px; color: var(--purple); border: 1px solid var(--purple); border-radius: 4px; padding: 0 4px; margin-left: 5px; }
+
   .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; gap: 10px; }
   .topbar h1 { font-size: 15px; font-weight: 600; }
   .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
@@ -26,46 +42,39 @@
   .status-pill.err { background: #2d1a1a; color: var(--red); border: 1px solid #6e1a1a; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
-  /* Layout */
   .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 45px); }
   .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px 12px; }
   .sidebar-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding: 6px 8px 4px; }
   .nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 13px; transition: all .12s; }
+  .nav-item svg { flex-shrink: 0; }
   .nav-item:hover { background: var(--surface2); color: var(--text); }
   .nav-item.active { background: #1a2d1e; color: var(--green); }
-
   .main { padding: 24px 28px; overflow-y: auto; }
   .section { display: none; }
   .section.active { display: block; }
 
-  /* Page header */
   .page-title { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
   .page-desc { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
 
-  /* Cards */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
   .card-title { font-size: 13px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
+  .card-title svg { color: var(--muted); }
   .badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: var(--blue-dim); color: var(--blue); }
 
-  /* Form */
   label.field-label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
   .field { margin-bottom: 14px; }
   .label-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
   .label-row label { margin-bottom: 0; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
   .label-val { font-size: 13px; color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
-
   input[type="number"], input[type="date"], select {
     width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
     color: var(--text); font-size: 13px; font-family: var(--font); padding: 7px 10px; outline: none;
   }
   input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(56,139,253,0.15); }
-  input[type="range"] { -webkit-appearance: none; width: 100%; height: 3px; background: var(--border); border-radius: 2px; outline: none; cursor: pointer; padding: 0; }
+  input[type="range"] { appearance: none; -webkit-appearance: none; width: 100%; height: 3px; background: var(--border); border-radius: 2px; outline: none; cursor: pointer; padding: 0; }
   input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--blue); cursor: pointer; }
-
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
 
-  /* Multi-select region cards */
   .region-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
   .region-card {
     border: 2px solid var(--border); border-radius: 8px; padding: 12px;
@@ -79,26 +88,22 @@
   .region-card .check {
     position: absolute; top: 8px; right: 8px; width: 16px; height: 16px;
     border-radius: 50%; border: 2px solid var(--border); display: flex; align-items: center; justify-content: center;
-    font-size: 9px; transition: all .15s;
+    transition: all .15s;
   }
-  .region-card.selected .check { background: var(--green-dim); border-color: var(--green); color: white; }
+  .region-card .check svg { display: none; color: white; width: 10px; height: 10px; }
+  .region-card.selected .check { background: var(--green-dim); border-color: var(--green); }
+  .region-card.selected .check svg { display: block; }
 
-  /* Source badge */
   .source-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; margin-top: 4px; }
-
-  /* Map */
   #map { height: 320px; border-radius: 8px; border: 1px solid var(--border); margin-top: 10px; }
-
-  /* Bbox display */
   .bbox-display { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 9px 12px; font-family: monospace; font-size: 11px; color: var(--blue); margin-top: 8px; word-break: break-all; }
 
-  /* Info boxes */
   .info-box { border-radius: 6px; padding: 9px 12px; font-size: 12px; display: flex; gap: 8px; align-items: flex-start; margin-bottom: 14px; }
+  .info-box svg { flex-shrink: 0; margin-top: 1px; }
   .info-box.info { background: #0d1f3c; border: 1px solid var(--blue-dim); color: #79c0ff; }
   .info-box.warn { background: #2d1f00; border: 1px solid #5c3d02; color: #e3b341; }
   .info-box.success { background: #0d2d1a; border: 1px solid #238636; color: #56d364; }
 
-  /* Toggle */
   .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--border); }
   .toggle-row:last-child { border-bottom: none; }
   .toggle-info h4 { font-size: 13px; font-weight: 500; }
@@ -110,19 +115,15 @@
   .toggle input:checked + .slider { background: var(--green-dim); }
   .toggle input:checked + .slider::before { transform: translateX(16px); }
 
-  /* Buttons */
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: pointer; transition: all .12s; }
   .btn-primary { background: var(--green-dim); color: #fff; }
   .btn-primary:hover { background: #2ea043; }
   .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
   .btn-secondary:hover { background: var(--border); }
   .btn-row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
-
-  /* Save bar */
   .save-bar { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 12px 28px; display: flex; align-items: center; gap: 12px; margin: 0 -28px -24px; }
-  .save-msg { font-size: 12px; color: var(--green); }
+  .save-msg { font-size: 12px; color: var(--green); display: flex; align-items: center; gap: 5px; }
 
-  /* Stats */
   .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
   .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
   .stat-val { font-size: 22px; font-weight: 700; }
@@ -131,83 +132,99 @@
   .stat-card.blue .stat-val { color: var(--blue); }
   .stat-card.amber .stat-val { color: var(--amber); }
 
-  /* Code block */
   .code-block { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
-  .code-block .comment { color: var(--green); }
+  .code-block .label { color: var(--green); }
   .code-block .cmd { color: var(--text); }
 
-  /* Selection summary */
-  .sel-summary { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; margin-top: 10px; }
+  .sel-summary { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; margin-top: 10px; display: flex; align-items: center; gap: 8px; }
   .sel-summary strong { color: var(--green); }
+  .sel-summary svg { color: var(--green); flex-shrink: 0; }
+
+  .quicklinks { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
+  .quicklinks a { display: flex; align-items: center; gap: 8px; color: var(--blue); }
+  .quicklinks svg { flex-shrink: 0; }
 </style>
 </head>
 <body>
-
+<div class="topnav">
+  <div class="brand">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><path d="M12 12L5 19"/><path d="M3 21l2-2"/></svg>
+    <span>Sentinel Sentinel</span>
+  </div>
+  <nav>
+    <a href="/">Beranda</a>
+    <a href="/Sentinel1Dashboard.html">Monitor</a>
+    <a href="/pipeline_config_ui.html" class="current">Konfigurasi<span class="tag">admin</span></a>
+    <a href="/Storage_Manager.html">Storage<span class="tag">admin</span></a>
+  </nav>
+</div>
 <div class="topbar">
-  <div>🛰️</div>
-  <h1>Sentinel-1 Pipeline Config</h1>
+  <h1>Konfigurasi Pipeline</h1>
   <div class="topbar-right">
-    <span style="font-size:11px;color:var(--muted)" id="last-save-label">—</span>
-    <div id="db-status" class="status-pill err"><span class="dot"></span> Mengecek...</div>
+    <span style="font-size:11px;color:var(--muted)" id="last-save-label">-</span>
+    <div id="db-status" class="status-pill err"><span class="dot"></span> Mengecek</div>
   </div>
 </div>
-
 <div class="layout">
   <nav class="sidebar">
     <div class="sidebar-label">Pengaturan</div>
-    <div class="nav-item active" onclick="go('area',this)">🗺️ &nbsp;Area & Waktu</div>
-    <div class="nav-item" onclick="go('pipeline',this)">⚙️ &nbsp;Parameter Pipeline</div>
-    <div class="nav-item" onclick="go('kualitas',this)">📊 &nbsp;Ambang Kualitas</div>
-    <div class="nav-item" onclick="go('database',this)">🗄️ &nbsp;Database</div>
+    <div class="nav-item active" onclick="go('area',this)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4z"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+      <span>Area dan Waktu</span>
+    </div>
+    <div class="nav-item" onclick="go('pipeline',this)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span>Parameter Pipeline</span>
+    </div>
+    <div class="nav-item" onclick="go('kualitas',this)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+      <span>Ambang Kualitas</span>
+    </div>
+    <div class="nav-item" onclick="go('database',this)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      <span>Database</span>
+    </div>
     <div class="sidebar-label" style="margin-top:14px">Monitor</div>
-    <div class="nav-item" onclick="go('status',this)">📡 &nbsp;Status Pipeline</div>
+    <div class="nav-item" onclick="go('status',this)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <span>Status Pipeline</span>
+    </div>
   </nav>
-
   <main class="main">
-
-    <!-- ══ TAB: AREA & WAKTU ══ -->
     <section id="tab-area" class="section active">
-      <div class="page-title">Area & Rentang Waktu</div>
-      <div class="page-desc">Pilih wilayah AOI yang ingin dipantau — bisa lebih dari satu. Koordinat diverifikasi dari sumber resmi BPS dan OpenStreetMap.</div>
-
-      <!-- Multi-select wilayah -->
+      <div class="page-title">Area dan Rentang Waktu</div>
+      <div class="page-desc">Pilih wilayah AOI yang ingin dipantau, bisa lebih dari satu. Koordinat diverifikasi dari sumber resmi BPS dan OpenStreetMap.</div>
       <div class="card">
         <div class="card-title">
-          🗺️ Pilih Wilayah AOI
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4z"/></svg>
+          <span>Pilih Wilayah AOI</span>
           <span class="badge">Pilih satu atau lebih</span>
         </div>
-
         <div class="info-box info">
-          💡 Pilih satu atau beberapa wilayah. Pipeline akan menggabungkan semua bbox yang dipilih menjadi satu area survei.
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>Pilih satu atau beberapa wilayah. Pipeline akan menggabungkan semua bbox yang dipilih menjadi satu area survei.</span>
         </div>
-
-        <div class="region-grid" id="region-grid">
-          <!-- diisi oleh JS -->
-        </div>
-
+        <div class="region-grid" id="region-grid"></div>
         <div id="sel-summary" class="sel-summary" style="display:none"></div>
-
         <div style="margin-top:12px">
           <label class="field-label">Preview peta area terpilih</label>
           <div id="map"></div>
-          <div class="source-tag">
-            🔗 Sumber koordinat: BPS DKI Jakarta, OpenStreetMap, koordinat.id
-          </div>
+          <div class="source-tag">Sumber koordinat: BPS DKI Jakarta, OpenStreetMap, koordinat.id</div>
           <div class="bbox-display" id="bbox-display">Pilih minimal satu wilayah di atas</div>
         </div>
       </div>
-
-      <!-- Waktu -->
       <div class="card">
-        <div class="card-title">📅 Rentang Waktu</div>
+        <div class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span>Rentang Waktu</span>
+        </div>
         <div class="field">
           <label class="field-label">Mode</label>
           <select id="time-mode" onchange="toggleTimeMode(this.value)">
-            <option value="relative">🔄 N hari terakhir (dinamis — selalu up-to-date)</option>
-            <option value="absolute">📌 Tanggal spesifik (statis)</option>
+            <option value="relative">N hari terakhir - dinamis, selalu up to date</option>
+            <option value="absolute">Tanggal spesifik - statis</option>
           </select>
         </div>
-
         <div id="mode-relative">
           <div class="field">
             <div class="label-row">
@@ -217,15 +234,14 @@
             <input type="range" id="days-back" min="6" max="1095" value="90"
                    oninput="document.getElementById('days-val').textContent=this.value+' hari';updatePreview()">
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
-              <span>6 hr (1 pass)</span><span>90 hr (3 bln)</span><span>365 hr (1 thn)</span><span>3 thn</span>
+              <span>6 hr</span><span>90 hr</span><span>365 hr</span><span>3 thn</span>
             </div>
           </div>
           <div class="info-box success" id="preview-box">
-            📡 Data dari <strong id="from-date"></strong> sampai <strong>hari ini</strong>
-            — estimasi <strong id="est-scenes"></strong> scene Sentinel-1
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/><path d="M12 12L5 19"/></svg>
+            <span>Data dari <strong id="from-date"></strong> sampai hari ini, estimasi <strong id="est-scenes"></strong> scene Sentinel-1</span>
           </div>
         </div>
-
         <div id="mode-absolute" style="display:none">
           <div class="grid-2">
             <div class="field">
@@ -238,176 +254,198 @@
             </div>
           </div>
           <div class="info-box warn">
-            ⏳ Data historis Sentinel-1 tersedia mulai 2014. Semakin panjang rentang, semakin banyak data.
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+            <span>Data historis Sentinel-1 tersedia mulai 2014. Semakin panjang rentang, semakin banyak data.</span>
           </div>
         </div>
       </div>
-
-      <!-- Orbit -->
       <div class="card">
-        <div class="card-title">🛸 Arah Orbit</div>
+        <div class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+          <span>Arah Orbit</span>
+        </div>
         <div style="display:flex;gap:10px">
           <label style="flex:1;border:2px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all .15s" id="orb-asc-lbl">
             <input type="checkbox" id="orb-asc" checked onchange="updateOrbitLabels()" style="accent-color:var(--green);margin-right:6px">
-            <span style="font-size:13px;font-weight:600">⬆️ ASCENDING</span>
-            <p style="font-size:11px;color:var(--muted);margin-top:3px">Pagi hari ~05:30 WIB<br>Baik untuk flood detection</p>
+            <span style="font-size:13px;font-weight:600">Ascending</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:3px">Pagi hari sekitar 05:30 WIB, baik untuk deteksi banjir</p>
           </label>
           <label style="flex:1;border:2px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all .15s" id="orb-desc-lbl">
             <input type="checkbox" id="orb-desc" onchange="updateOrbitLabels()" style="accent-color:var(--green);margin-right:6px">
-            <span style="font-size:13px;font-weight:600">⬇️ DESCENDING</span>
-            <p style="font-size:11px;color:var(--muted);margin-top:3px">Sore hari ~17:30 WIB<br>Coverage komplementer</p>
+            <span style="font-size:13px;font-weight:600">Descending</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:3px">Sore hari sekitar 17:30 WIB, coverage komplementer</p>
           </label>
         </div>
       </div>
-
       <div class="save-bar">
-        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan & Generate Config</button>
-        <span class="save-msg" id="save-msg-area" style="display:none">✅ Tersimpan!</span>
-        <span style="font-size:11px;color:var(--muted);margin-left:auto">Config disimpan di browser. Copy ke config/config.json untuk diterapkan.</span>
+        <button class="btn btn-primary" onclick="saveAll()">Simpan dan generate config</button>
+        <span class="save-msg" id="save-msg-area" style="display:none">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Tersimpan</span>
+        </span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">Config disimpan di browser. Salin ke config/config.json untuk diterapkan.</span>
       </div>
     </section>
 
-    <!-- ══ TAB: PIPELINE ══ -->
     <section id="tab-pipeline" class="section">
       <div class="page-title">Parameter Pipeline ETL</div>
       <div class="page-desc">Atur parameter pemrosesan setiap modul. Nilai default sudah dioptimalkan untuk data Sentinel-1 IW GRD.</div>
-
       <div class="card">
-        <div class="card-title">🔧 Lee Filter — Reduksi Noise SAR</div>
+        <div class="card-title">Lee Filter, Reduksi Noise SAR</div>
         <div class="grid-2">
           <div class="field">
-            <div class="label-row"><label>Window size</label><span class="label-val" id="lee-w-val">7 × 7</span></div>
+            <div class="label-row"><label>Window size</label><span class="label-val" id="lee-w-val">7 x 7</span></div>
             <input type="range" id="lee-window" min="3" max="15" step="2" value="7"
-                   oninput="document.getElementById('lee-w-val').textContent=this.value+' × '+this.value">
+                   oninput="document.getElementById('lee-w-val').textContent=this.value+' x '+this.value">
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
-              <span>3×3 (detail)</span><span>7×7 (standar)</span><span>15×15 (halus)</span>
+              <span>3x3 detail</span><span>7x7 standar</span><span>15x15 halus</span>
             </div>
           </div>
           <div class="field">
             <label class="field-label">Jumlah looks</label>
             <select id="lee-looks">
-              <option value="1" selected>1 look (Sentinel-1 GRD standar)</option>
+              <option value="1" selected>1 look, Sentinel-1 GRD standar</option>
               <option value="2">2 looks</option>
               <option value="4">4 looks</option>
             </select>
           </div>
         </div>
       </div>
-
       <div class="card">
-        <div class="card-title">📦 COG Export</div>
+        <div class="card-title">Kalibrasi dan Terrain Correction</div>
+        <div class="info-box info">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>Dijalankan lewat SNAP gpt sebelum crop. Butuh ESA SNAP terpasang dan gpt tersedia di PATH pada mesin yang menjalankan pipeline.</span>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label class="field-label">DEM</label>
+            <select id="dem-name">
+              <option value="SRTM 3Sec" selected>SRTM 3Sec</option>
+              <option value="SRTM 1Sec HGT">SRTM 1Sec HGT</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Pixel spacing keluaran</label>
+            <select id="pixel-spacing">
+              <option value="10" selected>10 meter</option>
+              <option value="20">20 meter</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">COG Export</div>
         <div class="grid-2">
           <div class="field">
             <label class="field-label">Kompresi</label>
             <select id="cog-compress">
-              <option value="LZW" selected>LZW — lossless, kompatibilitas terbaik</option>
-              <option value="DEFLATE">DEFLATE — file lebih kecil</option>
-              <option value="ZSTD">ZSTD — tercepat</option>
+              <option value="LZW" selected>LZW, lossless, kompatibilitas terbaik</option>
+              <option value="DEFLATE">DEFLATE, file lebih kecil</option>
+              <option value="ZSTD">ZSTD, tercepat</option>
             </select>
           </div>
           <div class="field">
             <label class="field-label">Tile block size</label>
             <select id="cog-block">
-              <option value="256">256px — untuk area kecil</option>
-              <option value="512" selected>512px — standar COG</option>
-              <option value="1024">1024px — untuk area besar</option>
+              <option value="256">256px, untuk area kecil</option>
+              <option value="512" selected>512px, standar COG</option>
+              <option value="1024">1024px, untuk area besar</option>
             </select>
           </div>
           <div class="field">
             <label class="field-label">Unit backscatter output</label>
             <select id="cog-db">
-              <option value="false" selected>Linear (DN) — untuk ML langsung</option>
-              <option value="true">Desibel (dB) — untuk analisis fisik</option>
+              <option value="false" selected>Linear DN, untuk ML langsung</option>
+              <option value="true">Desibel dB, untuk analisis fisik</option>
             </select>
           </div>
         </div>
       </div>
-
       <div class="card">
-        <div class="card-title">🔁 Retry & Timeout Orchestrator</div>
+        <div class="card-title">Retry dan Timeout Orchestrator</div>
         <div class="grid-2">
           <div class="field">
-            <div class="label-row"><label>Max retry per stage</label><span class="label-val" id="retry-val">3 ×</span></div>
+            <div class="label-row"><label>Max retry per stage</label><span class="label-val" id="retry-val">3 kali</span></div>
             <input type="range" id="retry-count" min="1" max="5" value="3"
-                   oninput="document.getElementById('retry-val').textContent=this.value+' ×'">
+                   oninput="document.getElementById('retry-val').textContent=this.value+' kali'">
           </div>
           <div class="field">
-            <div class="label-row"><label>Delay antar retry</label><span class="label-val" id="delay-val">30 dtk</span></div>
+            <div class="label-row"><label>Delay antar retry</label><span class="label-val" id="delay-val">30 detik</span></div>
             <input type="range" id="retry-delay" min="5" max="120" value="30" step="5"
-                   oninput="document.getElementById('delay-val').textContent=this.value+' dtk'">
+                   oninput="document.getElementById('delay-val').textContent=this.value+' detik'">
           </div>
         </div>
       </div>
-
       <div class="save-bar">
-        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan Config Pipeline</button>
-        <span class="save-msg" id="save-msg-pipeline" style="display:none">✅ Tersimpan!</span>
+        <button class="btn btn-primary" onclick="saveAll()">Simpan config pipeline</button>
+        <span class="save-msg" id="save-msg-pipeline" style="display:none">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Tersimpan</span>
+        </span>
       </div>
     </section>
 
-    <!-- ══ TAB: KUALITAS ══ -->
     <section id="tab-kualitas" class="section">
       <div class="page-title">Ambang Batas Kualitas</div>
-      <div class="page-desc">Tentukan standar minimum agar data diterima (PASS) atau ditolak (FAIL). Data di bawah standar tetap disimpan tapi di-flag.</div>
-
+      <div class="page-desc">Tentukan standar minimum agar data diterima atau ditolak. Data di bawah standar tetap disimpan tapi diberi tanda.</div>
       <div class="card">
-        <div class="card-title">✅ Skor Kualitas Minimum</div>
+        <div class="card-title">Skor Kualitas Minimum</div>
         <div class="field">
           <div class="label-row">
-            <label>Skor minimum untuk status PASS</label>
+            <label>Skor minimum untuk status lolos</label>
             <span class="label-val" id="min-score-val" style="color:var(--green)">60 / 100</span>
           </div>
           <input type="range" id="min-score" min="0" max="100" value="60"
                  oninput="updateScoreColor(this.value)">
           <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px">
-            <span>0 (semua lolos)</span><span>60 (standar)</span><span>80 (ketat)</span><span>100</span>
+            <span>0, semua lolos</span><span>60, standar</span><span>80, ketat</span><span>100</span>
           </div>
         </div>
         <div class="field">
-          <div class="label-row"><label>Max % pixel NoData</label><span class="label-val" id="nodata-val">30 %</span></div>
+          <div class="label-row"><label>Max persen pixel nodata</label><span class="label-val" id="nodata-val">30%</span></div>
           <input type="range" id="max-nodata" min="0" max="100" value="30"
-                 oninput="document.getElementById('nodata-val').textContent=this.value+' %'">
+                 oninput="document.getElementById('nodata-val').textContent=this.value+'%'">
         </div>
         <div class="field">
-          <div class="label-row"><label>Ambang tutupan awan</label><span class="label-val" id="cloud-val">20 %</span></div>
+          <div class="label-row"><label>Ambang tutupan awan</label><span class="label-val" id="cloud-val">20%</span></div>
           <input type="range" id="cloud-thresh" min="0" max="100" value="20"
-                 oninput="document.getElementById('cloud-val').textContent=this.value+' %'">
+                 oninput="document.getElementById('cloud-val').textContent=this.value+'%'">
         </div>
       </div>
-
       <div class="card">
-        <div class="card-title">🔔 Alert Otomatis</div>
+        <div class="card-title">Alert Otomatis</div>
         <div class="toggle-row">
-          <div class="toggle-info"><h4>Alert saat quality FAIL</h4><p>Simpan ke alert_events jika skor di bawah minimum</p></div>
+          <div class="toggle-info"><h4>Alert saat quality gagal</h4><p>Simpan ke alert_events jika skor di bawah minimum</p></div>
           <label class="toggle"><input type="checkbox" id="alert-fail" checked><span class="slider"></span></label>
         </div>
         <div class="toggle-row">
-          <div class="toggle-info"><h4>Alert data baru tiba</h4><p>INFO saat scene berhasil diproses penuh</p></div>
+          <div class="toggle-info"><h4>Alert data baru tiba</h4><p>Info saat scene berhasil diproses penuh</p></div>
           <label class="toggle"><input type="checkbox" id="alert-arrival" checked><span class="slider"></span></label>
         </div>
         <div class="toggle-row">
-          <div class="toggle-info"><h4>Alert pipeline error</h4><p>CRITICAL jika stage gagal setelah semua retry habis</p></div>
+          <div class="toggle-info"><h4>Alert pipeline error</h4><p>Kritis jika stage gagal setelah semua retry habis</p></div>
           <label class="toggle"><input type="checkbox" id="alert-error" checked><span class="slider"></span></label>
         </div>
       </div>
-
       <div class="save-bar">
-        <button class="btn btn-primary" onclick="saveAll()">💾 Simpan Ambang Kualitas</button>
-        <span class="save-msg" id="save-msg-kualitas" style="display:none">✅ Tersimpan!</span>
+        <button class="btn btn-primary" onclick="saveAll()">Simpan ambang kualitas</button>
+        <span class="save-msg" id="save-msg-kualitas" style="display:none">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Tersimpan</span>
+        </span>
       </div>
     </section>
 
-    <!-- ══ TAB: DATABASE ══ -->
     <section id="tab-database" class="section">
       <div class="page-title">Konfigurasi Database</div>
-      <div class="page-desc">Pengaturan koneksi PostgreSQL. Edit file <code>.env</code> untuk mengubah nilai ini.</div>
-
+      <div class="page-desc">Pengaturan koneksi PostgreSQL. Edit file .env untuk mengubah nilai ini.</div>
       <div class="info-box warn">
-        ⚠️ Jangan ubah file <code>.env</code> di sini — ubah langsung di teks editor. Halaman ini hanya untuk referensi dan test koneksi.
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+        <span>Jangan ubah file .env di sini, ubah langsung di teks editor. Halaman ini hanya untuk referensi dan test koneksi.</span>
       </div>
-
       <div class="card">
-        <div class="card-title">🗄️ Koneksi (dari .env)</div>
+        <div class="card-title">Koneksi dari .env</div>
         <div class="grid-2">
           <div class="field"><label class="field-label">DB_HOST</label><input value="localhost" readonly style="opacity:.5;cursor:default"></div>
           <div class="field"><label class="field-label">DB_PORT</label><input value="5432" readonly style="opacity:.5;cursor:default"></div>
@@ -415,73 +453,73 @@
           <div class="field"><label class="field-label">DB_USER</label><input value="postgres" readonly style="opacity:.5;cursor:default"></div>
         </div>
       </div>
-
       <div class="card">
-        <div class="card-title">🔌 Test Koneksi</div>
-        <button class="btn btn-secondary" onclick="testConn()">🔍 Test koneksi ke API</button>
+        <div class="card-title">Test Koneksi</div>
+        <button class="btn btn-secondary" onclick="testConn()">Test koneksi ke API</button>
         <div id="conn-result" style="margin-top:10px"></div>
       </div>
     </section>
 
-    <!-- ══ TAB: STATUS ══ -->
     <section id="tab-status" class="section">
       <div class="page-title">Status Pipeline</div>
       <div class="page-desc">Ringkasan sistem saat ini dari database.</div>
-
       <div class="stat-row">
-        <div class="stat-card green"><div class="stat-val" id="s-scenes">—</div><div class="stat-label">Scene Terdaftar</div></div>
-        <div class="stat-card blue"><div class="stat-val" id="s-gold">—</div><div class="stat-label">Produk GOLD</div></div>
-        <div class="stat-card green"><div class="stat-val" id="s-pass">—</div><div class="stat-label">QA PASS</div></div>
-        <div class="stat-card amber"><div class="stat-val" id="s-alerts">—</div><div class="stat-label">Alert Aktif</div></div>
+        <div class="stat-card green"><div class="stat-val" id="s-scenes">-</div><div class="stat-label">Scene Terdaftar</div></div>
+        <div class="stat-card blue"><div class="stat-val" id="s-gold">-</div><div class="stat-label">Produk GOLD</div></div>
+        <div class="stat-card green"><div class="stat-val" id="s-pass">-</div><div class="stat-label">QA Lolos</div></div>
+        <div class="stat-card amber"><div class="stat-val" id="s-alerts">-</div><div class="stat-label">Alert Aktif</div></div>
       </div>
-
       <div class="card">
-        <div class="card-title">🔗 Link Cepat API</div>
-        <div style="display:flex;flex-direction:column;gap:7px;font-size:13px">
-          <a href="http://localhost:8000/docs" target="_blank" style="color:var(--blue)">📖 Swagger UI (dokumentasi interaktif)</a>
-          <a href="http://localhost:8000/api/health" target="_blank" style="color:var(--blue)">💓 Health Check</a>
-          <a href="http://localhost:8000/api/scenes" target="_blank" style="color:var(--blue)">🛰️ Daftar Scene</a>
-          <a href="http://localhost:8000/api/quality/1" target="_blank" style="color:var(--blue)">📊 Kualitas Scene #1</a>
-          <a href="http://localhost:8000/api/metadata/lineage/7" target="_blank" style="color:var(--blue)">🔗 Lineage Produk GOLD #7</a>
+        <div class="card-title">Link Cepat API</div>
+        <div class="quicklinks">
+          <a href="http://localhost:8000/docs" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>Swagger UI, dokumentasi interaktif</span>
+          </a>
+          <a href="http://localhost:8000/api/health" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <span>Health check</span>
+          </a>
+          <a href="http://localhost:8000/api/scenes" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 6a6 6 0 0 1 6 6"/></svg>
+            <span>Daftar scene</span>
+          </a>
+          <a href="http://localhost:8000/api/quality/1" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/></svg>
+            <span>Kualitas scene 1</span>
+          </a>
+          <a href="http://localhost:8000/api/metadata/lineage/7" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 8.5l7 7"/></svg>
+            <span>Lineage produk GOLD 7</span>
+          </a>
         </div>
       </div>
-
       <div class="card">
-        <div class="card-title">💻 Perintah PowerShell</div>
+        <div class="card-title">Perintah PowerShell</div>
         <div class="code-block">
-          <span class="comment"># Aktifkan virtual environment</span>
+          <span class="label">Aktifkan virtual environment</span>
           <span class="cmd">venv\Scripts\activate</span>
-          <span class="comment" style="margin-top:6px"># Start API server</span>
+          <span class="label" style="margin-top:6px">Start API server</span>
           <span class="cmd">uvicorn api.main:app --reload --host 0.0.0.0 --port 8000</span>
-          <span class="comment" style="margin-top:6px"># Insert seed data</span>
+          <span class="label" style="margin-top:6px">Insert seed data</span>
           <span class="cmd">python -m etl.seed_data</span>
-          <span class="comment" style="margin-top:6px"># Jalankan semua test</span>
+          <span class="label" style="margin-top:6px">Jalankan semua test</span>
           <span class="cmd">pytest tests/ -v --cov=etl --cov=api</span>
         </div>
       </div>
-
-      <button class="btn btn-secondary" onclick="loadStatus()" style="margin-top:4px">🔄 Refresh Status</button>
+      <button class="btn btn-secondary" onclick="loadStatus()" style="margin-top:4px">Refresh status</button>
     </section>
-
   </main>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-// ═══════════════════════════════════════════════════════════════════
-// REGION DATA — koordinat diverifikasi dari sumber resmi:
-// Sumber: Biro Pemerintahan Sekretariat Daerah Provinsi DKI Jakarta
-//         BPS Indonesia, OpenStreetMap (OSM Nominatim)
-//         Koordinat diverifikasi per Manado Post (2025): DKI 5.60°S-6.37°S, 106.29°-106.97°BT
-// ═══════════════════════════════════════════════════════════════════
 const REGIONS = [
   {
     id: 'dki_jakarta',
     name: 'DKI Jakarta',
-    sub: 'Ibu Kota (5 kota adm + Kep. Seribu)',
-    area: '661.5 km²',
-    // Sumber: Biro Pemerintahan Pemprov DKI Jakarta
-    // 5.602416°S – 6.372426°S, 106.294848°BT – 106.973391°BT
+    sub: 'Ibu Kota, 5 kota administratif dan Kep. Seribu',
+    area: '661.5 km2',
     bbox: { minLon: 106.2948, maxLon: 106.9734, minLat: -6.3724, maxLat: -5.6024 },
     color: '#388bfd',
   },
@@ -489,8 +527,7 @@ const REGIONS = [
     id: 'kota_bogor',
     name: 'Kota Bogor',
     sub: 'Kota, 60 km selatan Jakarta',
-    area: '118.5 km²',
-    // Sumber: BPS / OSM — center -6.5944, 106.7892
+    area: '118.5 km2',
     bbox: { minLon: 106.7400, maxLon: 106.8600, minLat: -6.6500, maxLat: -6.5200 },
     color: '#3fb950',
   },
@@ -498,8 +535,7 @@ const REGIONS = [
     id: 'kab_bogor',
     name: 'Kabupaten Bogor',
     sub: 'Meliputi Cibinong, Sentul, Ciawi',
-    area: '2,710 km²',
-    // Sumber: OSM — kabupaten envelope
+    area: '2710 km2',
     bbox: { minLon: 106.3000, maxLon: 107.2500, minLat: -6.9000, maxLat: -6.2000 },
     color: '#238636',
   },
@@ -507,17 +543,15 @@ const REGIONS = [
     id: 'kota_depok',
     name: 'Kota Depok',
     sub: 'Selatan Jakarta, berbatasan langsung',
-    area: '200.3 km²',
-    // Sumber: OSM — center -6.4000, 106.8186
+    area: '200.3 km2',
     bbox: { minLon: 106.7100, maxLon: 106.9000, minLat: -6.4800, maxLat: -6.3200 },
     color: '#d29922',
   },
   {
     id: 'kota_tangerang',
     name: 'Kota Tangerang',
-    sub: 'Barat Jakarta, termasuk Bandara',
-    area: '164.5 km²',
-    // Sumber: OSM — center -6.178, 106.63
+    sub: 'Barat Jakarta, termasuk bandara',
+    area: '164.5 km2',
     bbox: { minLon: 106.5600, maxLon: 106.7200, minLat: -6.2600, maxLat: -6.1000 },
     color: '#f85149',
   },
@@ -525,8 +559,7 @@ const REGIONS = [
     id: 'kab_tangerang',
     name: 'Kabupaten Tangerang',
     sub: 'Meliputi Serpong, BSD, Tangerang Selatan',
-    area: '959.6 km²',
-    // Sumber: OSM — envelope kabupaten + kota tangsel
+    area: '959.6 km2',
     bbox: { minLon: 106.4500, maxLon: 106.8000, minLat: -6.4000, maxLat: -5.9500 },
     color: '#ff7b72',
   },
@@ -534,8 +567,7 @@ const REGIONS = [
     id: 'kota_bekasi',
     name: 'Kota Bekasi',
     sub: 'Timur Jakarta, paling padat',
-    area: '210.5 km²',
-    // Sumber: OSM — center -6.2383, 106.9756
+    area: '210.5 km2',
     bbox: { minLon: 106.8900, maxLon: 107.0600, minLat: -6.3500, maxLat: -6.1300 },
     color: '#ffa657',
   },
@@ -543,48 +575,42 @@ const REGIONS = [
     id: 'kab_bekasi',
     name: 'Kabupaten Bekasi',
     sub: 'Timur laut Jabodetabek, industri',
-    area: '1,484 km²',
-    // Sumber: OSM — envelope kabupaten
+    area: '1484 km2',
     bbox: { minLon: 106.9500, maxLon: 107.4500, minLat: -6.5000, maxLat: -6.0000 },
     color: '#e3b341',
   },
   {
     id: 'jabodetabek',
-    name: '🌐 Seluruh Jabodetabek',
+    name: 'Seluruh Jabodetabek',
     sub: 'Gabungan semua wilayah di atas',
-    area: '~6,392 km²',
-    // Envelope keseluruhan Jabodetabek
-    // mencakup DKI + Bogor + Depok + Tangerang + Bekasi (kota & kab)
+    area: '6392 km2',
     bbox: { minLon: 106.2948, maxLon: 107.4500, minLat: -6.9000, maxLat: -5.6024 },
     color: '#a371f7',
   },
 ];
 
-// ═══════════════════════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════════════════════
 let selected = new Set(['dki_jakarta']);
 let map = null;
 let layers = {};
 
-// ═══════════════════════════════════════════════════════════════════
-// INIT REGION GRID
-// ═══════════════════════════════════════════════════════════════════
+function checkIconSvg() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+}
+
 function initRegionGrid() {
   const grid = document.getElementById('region-grid');
   grid.innerHTML = REGIONS.map(r => `
     <div class="region-card ${selected.has(r.id) ? 'selected' : ''}"
          id="rc-${r.id}" onclick="toggleRegion('${r.id}')">
-      <div class="check">${selected.has(r.id) ? '✓' : ''}</div>
+      <div class="check">${checkIconSvg()}</div>
       <div class="rc-name" style="color:${r.color}">${r.name}</div>
       <div class="rc-sub">${r.sub}</div>
-      <div class="rc-area">📐 ${r.area}</div>
+      <div class="rc-area">${r.area}</div>
     </div>
   `).join('');
 }
 
 function toggleRegion(id) {
-  // Jabodetabek adalah special: select all atau deselect all
   if (id === 'jabodetabek') {
     if (selected.has('jabodetabek')) {
       selected.clear();
@@ -593,14 +619,13 @@ function toggleRegion(id) {
       selected.add('jabodetabek');
     }
   } else {
-    // Deselect jabodetabek jika ada individual yang dipilih
     selected.delete('jabodetabek');
     if (selected.has(id)) {
       selected.delete(id);
     } else {
       selected.add(id);
     }
-    if (selected.size === 0) selected.add(id); // minimal 1
+    if (selected.size === 0) selected.add(id);
   }
   updateRegionUI();
   updateMap();
@@ -612,22 +637,17 @@ function updateRegionUI() {
     const el = document.getElementById('rc-' + r.id);
     const isSelected = selected.has(r.id);
     el.classList.toggle('selected', isSelected);
-    el.querySelector('.check').textContent = isSelected ? '✓' : '';
   });
-
   const names = REGIONS.filter(r => selected.has(r.id)).map(r => r.name);
   const sumEl = document.getElementById('sel-summary');
   if (names.length > 0) {
-    sumEl.style.display = 'block';
-    sumEl.innerHTML = `✅ Wilayah dipilih: <strong>${names.join(', ')}</strong>`;
+    sumEl.style.display = 'flex';
+    sumEl.innerHTML = `${checkIconSvg().replace('viewBox="0 0 24 24"','width="14" height="14" viewBox="0 0 24 24"')}<span>Wilayah dipilih: <strong>${names.join(', ')}</strong></span>`;
   } else {
     sumEl.style.display = 'none';
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// COMPUTE MERGED BBOX
-// ═══════════════════════════════════════════════════════════════════
 function getMergedBbox() {
   const sel = REGIONS.filter(r => selected.has(r.id));
   if (!sel.length) return null;
@@ -646,49 +666,27 @@ function updateBboxDisplay() {
   document.getElementById('bbox-display').textContent = wkt;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// MAP
-// ═══════════════════════════════════════════════════════════════════
 function initMap() {
-  map = L.map('map', {
-    center: [-6.21, 106.85],
-    zoom: 9,
-    zoomControl: true,
-  });
-
-  // Dark tile layer
+  map = L.map('map', { center: [-6.21, 106.85], zoom: 9, zoomControl: true });
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
+    attribution: 'OpenStreetMap contributors, CARTO',
     maxZoom: 19,
   }).addTo(map);
-
   updateMap();
 }
 
 function updateMap() {
   if (!map) return;
-
-  // Clear existing layers
   Object.values(layers).forEach(l => map.removeLayer(l));
   layers = {};
-
   const selRegions = REGIONS.filter(r => selected.has(r.id));
   const bounds = [];
-
   selRegions.forEach(r => {
     const b = r.bbox;
     const rect = L.rectangle(
       [[b.minLat, b.minLon], [b.maxLat, b.maxLon]],
-      {
-        color: r.color,
-        weight: 2,
-        fillOpacity: 0.12,
-        fillColor: r.color,
-        dashArray: r.id === 'jabodetabek' ? '6,3' : null,
-      }
+      { color: r.color, weight: 2, fillOpacity: 0.12, fillColor: r.color, dashArray: r.id === 'jabodetabek' ? '6,3' : null }
     ).addTo(map);
-
-    // Label
     const center = [(b.minLat + b.maxLat) / 2, (b.minLon + b.maxLon) / 2];
     const label = L.marker(center, {
       icon: L.divIcon({
@@ -697,29 +695,21 @@ function updateMap() {
         iconAnchor: [0, 0],
       }),
     }).addTo(map);
-
     layers['rect-' + r.id] = rect;
     layers['label-' + r.id] = label;
     bounds.push([b.minLat, b.minLon], [b.maxLat, b.maxLon]);
   });
-
-  if (bounds.length > 0) {
-    map.fitBounds(bounds, { padding: [20, 20] });
-  }
+  if (bounds.length > 0) map.fitBounds(bounds, { padding: [20, 20] });
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// DATE PREVIEW
-// ═══════════════════════════════════════════════════════════════════
 function updatePreview() {
   const days = parseInt(document.getElementById('days-back').value);
   const from = new Date();
   from.setDate(from.getDate() - days);
   const fmt = d => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
   document.getElementById('from-date').textContent = fmt(from);
-  // Sentinel-1 revisit: 6-12 hari → estimasi
   const est = Math.round(days / 9);
-  document.getElementById('est-scenes').textContent = `±${est}`;
+  document.getElementById('est-scenes').textContent = `sekitar ${est}`;
 }
 updatePreview();
 
@@ -729,78 +719,68 @@ function toggleTimeMode(v) {
 }
 
 function updateOrbitLabels() {
-  const asc  = document.getElementById('orb-asc').checked;
+  const asc = document.getElementById('orb-asc').checked;
   const desc = document.getElementById('orb-desc').checked;
-  document.getElementById('orb-asc-lbl').style.borderColor  = asc  ? 'var(--green)' : 'var(--border)';
+  document.getElementById('orb-asc-lbl').style.borderColor = asc ? 'var(--green)' : 'var(--border)';
   document.getElementById('orb-desc-lbl').style.borderColor = desc ? 'var(--green)' : 'var(--border)';
 }
 updateOrbitLabels();
 
-// ═══════════════════════════════════════════════════════════════════
-// QUALITY SCORE
-// ═══════════════════════════════════════════════════════════════════
 function updateScoreColor(v) {
   const el = document.getElementById('min-score-val');
   el.textContent = v + ' / 100';
   el.style.color = v >= 75 ? 'var(--red)' : v >= 50 ? 'var(--amber)' : 'var(--green)';
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// SAVE
-// ═══════════════════════════════════════════════════════════════════
 function saveAll() {
   const b = getMergedBbox();
   const cfg = {
-    _meta: {
+    meta: {
       generated: new Date().toISOString(),
-      note: 'Generated by Sentinel-1 Pipeline Config UI. Apply to config/config.json.',
       coord_source: 'Biro Pemerintahan Pemprov DKI Jakarta, BPS Indonesia, OpenStreetMap',
     },
     area: {
       selected_regions: Array.from(selected),
       merged_bbox: b,
       bbox_wkt: b ? `POLYGON((${b.minLon} ${b.minLat}, ${b.maxLon} ${b.minLat}, ${b.maxLon} ${b.maxLat}, ${b.minLon} ${b.maxLat}, ${b.minLon} ${b.minLat}))` : null,
-      time_mode:   document.getElementById('time-mode').value,
-      days_back:   parseInt(document.getElementById('days-back').value),
-      date_from:   document.getElementById('date-from').value,
-      date_to:     document.getElementById('date-to').value,
-      orbit_ascending:  document.getElementById('orb-asc').checked,
+      time_mode: document.getElementById('time-mode').value,
+      days_back: parseInt(document.getElementById('days-back').value),
+      date_from: document.getElementById('date-from').value,
+      date_to: document.getElementById('date-to').value,
+      orbit_ascending: document.getElementById('orb-asc').checked,
       orbit_descending: document.getElementById('orb-desc').checked,
     },
     pipeline: {
       lee_window_size: parseInt(document.getElementById('lee-window').value),
-      lee_looks:       parseInt(document.getElementById('lee-looks').value),
+      lee_looks: parseInt(document.getElementById('lee-looks').value),
+      dem_name: document.getElementById('dem-name').value,
+      pixel_spacing: parseFloat(document.getElementById('pixel-spacing').value),
       cog_compression: document.getElementById('cog-compress').value,
-      cog_blocksize:   parseInt(document.getElementById('cog-block').value),
-      cog_convert_db:  document.getElementById('cog-db').value === 'true',
-      retry_count:     parseInt(document.getElementById('retry-count').value),
+      cog_blocksize: parseInt(document.getElementById('cog-block').value),
+      cog_convert_db: document.getElementById('cog-db').value === 'true',
+      retry_count: parseInt(document.getElementById('retry-count').value),
       retry_delay_sec: parseInt(document.getElementById('retry-delay').value),
+      keep_raw: true,
     },
     quality: {
-      min_quality_score:       parseInt(document.getElementById('min-score').value),
-      max_nodata_percent:      parseInt(document.getElementById('max-nodata').value),
+      min_quality_score: parseInt(document.getElementById('min-score').value),
+      max_nodata_percent: parseInt(document.getElementById('max-nodata').value),
       cloud_threshold_percent: parseInt(document.getElementById('cloud-thresh').value),
-      alert_on_fail:    document.getElementById('alert-fail').checked,
+      alert_on_fail: document.getElementById('alert-fail').checked,
       alert_on_arrival: document.getElementById('alert-arrival').checked,
-      alert_on_error:   document.getElementById('alert-error').checked,
+      alert_on_error: document.getElementById('alert-error').checked,
     },
   };
-
   localStorage.setItem('sentinel1_cfg', JSON.stringify(cfg));
-  console.log('=== SENTINEL-1 CONFIG ===\n' + JSON.stringify(cfg, null, 2));
-
+  console.log(JSON.stringify(cfg, null, 2));
   const now = new Date().toLocaleTimeString('id-ID');
   document.getElementById('last-save-label').textContent = 'Disimpan ' + now;
-
   ['area', 'pipeline', 'kualitas'].forEach(id => {
     const el = document.getElementById('save-msg-' + id);
-    if (el) { el.style.display = 'inline'; setTimeout(() => el.style.display = 'none', 3000); }
+    if (el) { el.style.display = 'flex'; setTimeout(() => el.style.display = 'none', 3000); }
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// NAVIGATION
-// ═══════════════════════════════════════════════════════════════════
 function go(tab, el) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -809,9 +789,6 @@ function go(tab, el) {
   if (tab === 'area' && map) setTimeout(() => map.invalidateSize(), 50);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// API
-// ═══════════════════════════════════════════════════════════════════
 const API = 'http://localhost:8000';
 
 async function checkStatus() {
@@ -834,17 +811,17 @@ async function checkStatus() {
 
 async function testConn() {
   const el = document.getElementById('conn-result');
-  el.innerHTML = '<span style="color:var(--muted)">⏳ Mengecek...</span>';
+  el.innerHTML = '<span style="color:var(--muted)">Mengecek</span>';
   try {
     const r = await fetch(API + '/api/health', { signal: AbortSignal.timeout(5000) });
     const d = await r.json();
     if (d.db_connected) {
-      el.innerHTML = `<div class="info-box success">✅ Koneksi OK — pool ${d.pool_size} koneksi, ${d.checked_out} aktif saat ini.</div>`;
+      el.innerHTML = `<div class="info-box success"><span>Koneksi berhasil, pool ${d.pool_size} koneksi, ${d.checked_out} aktif saat ini.</span></div>`;
     } else {
-      el.innerHTML = `<div class="info-box warn">⚠️ API jalan tapi DB tidak terhubung. Cek DB_PASSWORD di file .env.</div>`;
+      el.innerHTML = `<div class="info-box warn"><span>API jalan tapi DB tidak terhubung. Cek DB_PASSWORD di file .env.</span></div>`;
     }
   } catch {
-    el.innerHTML = `<div class="info-box warn">❌ Tidak bisa hubungi API. Pastikan uvicorn berjalan:<br><code>uvicorn api.main:app --reload</code></div>`;
+    el.innerHTML = `<div class="info-box warn"><span>Tidak bisa hubungi API. Pastikan uvicorn berjalan: uvicorn api.main:app --reload</span></div>`;
   }
 }
 
@@ -855,19 +832,16 @@ async function loadStatus() {
       fetch(API + '/api/products?tier=GOLD&limit=1').then(r => r.json()),
       fetch(API + '/api/quality/summary/stats?n_days=365').then(r => r.json()),
     ]);
-    if (sc.status === 'fulfilled')  document.getElementById('s-scenes').textContent = sc.value.total ?? '—';
-    if (pr.status === 'fulfilled')  document.getElementById('s-gold').textContent   = pr.value.total ?? '—';
+    if (sc.status === 'fulfilled') document.getElementById('s-scenes').textContent = sc.value.total ?? '-';
+    if (pr.status === 'fulfilled') document.getElementById('s-gold').textContent = pr.value.total ?? '-';
     if (ql.status === 'fulfilled') {
       const f = ql.value.flags || {};
-      document.getElementById('s-pass').textContent   = f.PASS?.count ?? 0;
+      document.getElementById('s-pass').textContent = f.PASS?.count ?? 0;
       document.getElementById('s-alerts').textContent = (f.FAIL?.count ?? 0) + (f.WARNING?.count ?? 0);
     }
   } catch(e) { console.error(e); }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// BOOT
-// ═══════════════════════════════════════════════════════════════════
 initRegionGrid();
 updateBboxDisplay();
 setTimeout(initMap, 50);

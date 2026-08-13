@@ -1,0 +1,381 @@
+<!-- web/index.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sentinel Sentinel</title>
+<style>
+:root {
+  --bg: #0d1117; --s1: #161b22; --s2: #1c2128; --border: #30363d;
+  --text: #e6edf3; --muted: #7d8590;
+  --green: #3fb950; --gdim: #238636; --blue: #388bfd;
+  --amber: #d29922; --red: #f85149; --purple: #bc8cff;
+  --font: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.6; }
+a { color: inherit; text-decoration: none; }
+
+.header {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(13,17,23,0.92); backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 24px; display: flex; align-items: center; gap: 20px;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; flex-shrink: 0; color: var(--green); }
+.nav { display: flex; gap: 4px; flex: 1; }
+.nav a { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--muted); }
+.nav a:hover { background: var(--s2); color: var(--text); }
+.nav a.current { color: var(--text); background: var(--s2); }
+.nav .tag { font-size: 9px; color: var(--purple); border: 1px solid var(--purple); border-radius: 4px; padding: 0 4px; margin-left: 2px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+.pill.ok { background: #1a2d1e; color: var(--green); border: 1px solid #238636; }
+.pill.err { background: #2d1a1a; color: var(--red); border: 1px solid #6e1a1a; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.page { max-width: 1200px; margin: 0 auto; padding: 40px 24px 80px; }
+
+.hero { margin-bottom: 40px; }
+.hero-badge { display: inline-flex; align-items: center; gap: 6px; color: var(--blue); font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+.hero h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; max-width: 640px; }
+.hero p { color: var(--muted); font-size: 15px; margin-top: 10px; max-width: 560px; }
+
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 28px; }
+.stat { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.stat-val { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.stat.green .stat-val { color: var(--green); }
+.stat.blue .stat-val { color: var(--blue); }
+.stat.amber .stat-val { color: var(--amber); }
+
+.section { margin-top: 48px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+.section-title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.section-sub { font-size: 12px; color: var(--muted); }
+
+.rail-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+.rail-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; flex-wrap: wrap; gap: 8px; }
+.rail-meta .scene-id { font-size: 13px; color: var(--muted); }
+.rail-meta .scene-id strong { color: var(--text); font-family: monospace; }
+.rail-track { display: flex; align-items: center; }
+.rail-node { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 96px; }
+.rail-dot {
+  width: 16px; height: 16px; border-radius: 50%; background: var(--s2); border: 2px solid var(--border);
+  transition: all .3s; position: relative; z-index: 1;
+}
+.rail-node.done .rail-dot { background: var(--green); border-color: var(--green); }
+.rail-node.active .rail-dot { background: var(--blue); border-color: var(--blue); animation: pulse 1.4s infinite; }
+.rail-node.failed .rail-dot { background: var(--red); border-color: var(--red); }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(56,139,253,0.5); } 50% { box-shadow: 0 0 0 6px rgba(56,139,253,0); } }
+.rail-label { font-size: 11px; color: var(--muted); margin-top: 8px; text-align: center; line-height: 1.3; }
+.rail-node.done .rail-label, .rail-node.active .rail-label { color: var(--text); }
+.rail-line { flex: 1; height: 2px; background: var(--border); margin: 0 -2px; position: relative; top: -20px; }
+.rail-line.done { background: var(--green); }
+.rail-idle { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 20px 0; color: var(--muted); }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 7px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all .12s; }
+.btn-primary { background: var(--gdim); color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-ghost { background: var(--s2); color: var(--text); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--border); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.img-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
+.img-card:hover { border-color: var(--blue); transform: translateY(-2px); }
+.img-card img { width: 100%; aspect-ratio: 16/10; object-fit: cover; background: #1a1a1a; display: block; }
+.img-body { padding: 14px; }
+.img-date { font-size: 13px; font-weight: 600; }
+.img-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.img-tags { display: flex; gap: 6px; margin: 10px 0 12px; flex-wrap: wrap; }
+.tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 700; }
+.tag.pass { background: #1a2d1e; color: var(--green); }
+.tag.fail { background: #2d1a1a; color: var(--red); }
+.tag.warn { background: #2d1f00; color: var(--amber); }
+.tag.band { background: var(--s2); color: var(--blue); }
+.img-download { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+
+.skeleton { background: linear-gradient(90deg, var(--s2) 25%, var(--border) 50%, var(--s2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+@keyframes shimmer { 0%{background-position:200%} 100%{background-position:-200%} }
+.skeleton-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.skeleton-img { width: 100%; aspect-ratio: 16/10; }
+.skeleton-body { padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.sk-line { height: 12px; border-radius: 3px; }
+
+.no-data { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 48px 24px; color: var(--muted); grid-column: 1/-1; }
+
+.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.admin-card { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 18px; transition: border-color .15s; color: var(--purple); }
+.admin-card:hover { border-color: var(--purple); }
+.admin-card h3 { font-size: 14px; margin-top: 10px; color: var(--text); }
+.admin-card p { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.footer { border-top: 1px solid var(--border); margin-top: 64px; padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 700px) {
+  .stat-row { grid-template-columns: 1fr 1fr; }
+  .rail-track { overflow-x: auto; }
+  .nav { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="brand" id="brand-icon"></div>
+  <nav class="nav" id="main-nav"></nav>
+  <div id="api-status" class="pill err"><span class="dot"></span><span>Offline</span></div>
+</div>
+
+<div class="page">
+
+  <section class="hero">
+    <div class="hero-badge" id="hero-badge"></div>
+    <h1>Pemantauan banjir Jabodetabek dari radar satelit Sentinel-1</h1>
+    <p>Citra SAR diproses otomatis, dikalibrasi, dipotong ke area Jabodetabek, direduksi noise, lalu divalidasi kualitasnya, dan siap diunduh untuk analisis atau model prediksi banjir.</p>
+
+    <div class="stat-row">
+      <div class="stat green"><div class="stat-val" id="s-scenes">-</div><div class="stat-label">Total scene diproses</div></div>
+      <div class="stat blue"><div class="stat-val" id="s-gold">-</div><div class="stat-label">Citra siap pakai</div></div>
+      <div class="stat green"><div class="stat-val" id="s-pass">-</div><div class="stat-label">Lolos cek kualitas</div></div>
+      <div class="stat amber"><div class="stat-val" id="s-updated">-</div><div class="stat-label">Terakhir diperbarui</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-title" id="rail-title"></div>
+      <div class="section-sub" id="rail-sub">memeriksa</div>
+    </div>
+    <div class="rail-card">
+      <div class="rail-meta">
+        <div class="scene-id" id="rail-scene-info">-</div>
+        <button class="btn btn-primary" id="trigger-btn" onclick="triggerPipeline()"></button>
+      </div>
+      <div id="rail-track-wrap">
+        <div class="rail-idle">Memuat status pipeline</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-title" id="gallery-title"></div>
+      <div class="section-sub">Band <span id="band-label">VV</span></div>
+    </div>
+    <div class="gallery" id="gallery">
+      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
+      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
+      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <div class="section-title" id="admin-title"></div>
+      <div class="section-sub">Bukan untuk pengguna umum</div>
+    </div>
+    <div class="admin-grid" id="admin-grid"></div>
+  </section>
+
+</div>
+
+<div class="footer">Sentinel Sentinel - Sistem Informasi, Universitas Multimedia Nusantara</div>
+
+<script src="/icons.js"></script>
+<script>
+const API = window.location.origin;
+const STAGE_LABELS = {
+  DOWNLOAD: "Download",
+  CROP: "Kalibrasi + Crop",
+  LEE_FILTER: "Lee Filter",
+  COG_EXPORT: "COG Export",
+  QUALITY_ANALYTICS: "Quality Check",
+};
+const STAGE_ORDER = ["DOWNLOAD", "CROP", "LEE_FILTER", "COG_EXPORT", "QUALITY_ANALYTICS"];
+
+function buildChrome() {
+  document.getElementById("brand-icon").innerHTML = Icons.svg("satellite", 18) + "<span>Sentinel Sentinel</span>";
+  document.getElementById("main-nav").innerHTML = `
+    <a href="/" class="current">${Icons.svg("pulse", 14)}<span>Beranda</span></a>
+    <a href="/Sentinel1Dashboard.html">${Icons.svg("grid", 14)}<span>Monitor</span></a>
+    <a href="/pipeline_config_ui.html">${Icons.svg("sliders", 14)}<span>Konfigurasi</span><span class="tag">admin</span></a>
+    <a href="/Storage_Manager.html">${Icons.svg("database", 14)}<span>Storage</span><span class="tag">admin</span></a>
+  `;
+  document.getElementById("hero-badge").innerHTML = Icons.svg("droplet", 14) + "<span>Data siap pakai untuk mitigasi banjir</span>";
+  document.getElementById("rail-title").innerHTML = Icons.svg("pulse", 16) + "<span>Status pemrosesan</span>";
+  document.getElementById("gallery-title").innerHTML = Icons.svg("image", 16) + "<span>Citra terbaru</span>";
+  document.getElementById("admin-title").innerHTML = Icons.svg("sliders", 16) + "<span>Perangkat admin</span>";
+  document.getElementById("trigger-btn").innerHTML = Icons.svg("play", 14) + "<span>Jalankan sekarang</span>";
+  document.getElementById("admin-grid").innerHTML = `
+    <a class="admin-card" href="/Sentinel1Dashboard.html">
+      ${Icons.svg("grid", 22)}
+      <h3>Monitor lengkap</h3>
+      <p>Galeri penuh, status scheduler, dan log pipeline</p>
+    </a>
+    <a class="admin-card" href="/pipeline_config_ui.html">
+      ${Icons.svg("sliders", 22)}
+      <h3>Konfigurasi pipeline</h3>
+      <p>Atur wilayah, rentang waktu, dan parameter pemrosesan</p>
+    </a>
+    <a class="admin-card" href="/Storage_Manager.html">
+      ${Icons.svg("database", 22)}
+      <h3>Kelola storage</h3>
+      <p>Lihat dan bersihkan penyimpanan per tahap</p>
+    </a>
+  `;
+}
+
+async function checkApi() {
+  const el = document.getElementById("api-status");
+  try {
+    const r = await fetch(API + "/api/health", { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    el.className = d.db_connected ? "pill ok" : "pill err";
+    el.innerHTML = `<span class="dot"></span><span>${d.db_connected ? "Online" : "DB Error"}</span>`;
+  } catch (e) {
+    el.className = "pill err";
+    el.innerHTML = '<span class="dot"></span><span>Offline</span>';
+  }
+}
+
+async function loadStats() {
+  try {
+    const [sc, pr, ql] = await Promise.allSettled([
+      fetch(API + "/api/scenes?limit=1").then((r) => r.json()),
+      fetch(API + "/api/products?tier=GOLD&limit=1").then((r) => r.json()),
+      fetch(API + "/api/quality/summary/stats?n_days=365").then((r) => r.json()),
+    ]);
+    if (sc.status === "fulfilled") set("s-scenes", sc.value.total ?? "-");
+    if (pr.status === "fulfilled") set("s-gold", pr.value.total ?? "-");
+    if (ql.status === "fulfilled") {
+      const f = ql.value.flags || {};
+      set("s-pass", f.PASS?.count ?? 0);
+    }
+    set("s-updated", new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
+  } catch (e) {}
+}
+
+async function loadRail() {
+  try {
+    const r = await fetch(API + "/api/pipeline/status/current", { signal: AbortSignal.timeout(4000) });
+    const d = await r.json();
+    renderRail(d);
+  } catch (e) {
+    document.getElementById("rail-track-wrap").innerHTML =
+      '<div class="rail-idle">Tidak bisa menghubungi API status pipeline</div>';
+  }
+}
+
+function renderRail(d) {
+  const wrap = document.getElementById("rail-track-wrap");
+  const sub = document.getElementById("rail-sub");
+  const info = document.getElementById("rail-scene-info");
+
+  if (!d.stages || d.stages.length === 0) {
+    sub.textContent = "belum ada proses";
+    info.textContent = "Belum ada scene yang diproses";
+    wrap.innerHTML = `<div class="rail-idle">${Icons.svg("satellite", 28)}<span>Belum ada proses berjalan. Tekan Jalankan sekarang untuk memulai siklus pipeline.</span></div>`;
+    return;
+  }
+
+  const byStage = {};
+  d.stages.forEach((s) => { byStage[s.stage_name] = s.status; });
+
+  sub.textContent = d.active ? "sedang berjalan" : d.overall_status === "COMPLETE" ? "selesai" : d.overall_status.toLowerCase();
+  info.innerHTML = `Scene <strong>${d.product_identifier || d.scene_id || "-"}</strong>`;
+
+  let html = '<div class="rail-track">';
+  STAGE_ORDER.forEach((stage, i) => {
+    const status = byStage[stage];
+    let cls = "";
+    if (status === "SUCCESS") cls = "done";
+    else if (status === "RUNNING" || status === "QUEUED") cls = "active";
+    else if (status === "FAILED") cls = "failed";
+    html += `<div class="rail-node ${cls}"><div class="rail-dot"></div><div class="rail-label">${STAGE_LABELS[stage]}</div></div>`;
+    if (i < STAGE_ORDER.length - 1) {
+      html += `<div class="rail-line ${cls === "done" ? "done" : ""}"></div>`;
+    }
+  });
+  html += "</div>";
+  wrap.innerHTML = html;
+}
+
+async function triggerPipeline() {
+  const btn = document.getElementById("trigger-btn");
+  btn.disabled = true;
+  btn.innerHTML = Icons.svg("refresh", 14) + "<span>Memulai</span>";
+  try {
+    const r = await fetch(API + "/api/pipeline/trigger", { method: "POST", signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    btn.innerHTML = Icons.svg(d.started ? "play" : "clock", 14) + `<span>${d.started ? "Berjalan" : "Sudah berjalan"}</span>`;
+  } catch (e) {
+    btn.innerHTML = Icons.svg("alert", 14) + "<span>Gagal memicu</span>";
+  }
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = Icons.svg("play", 14) + "<span>Jalankan sekarang</span>";
+  }, 4000);
+}
+
+let currentBand = "VV";
+
+async function loadGallery() {
+  const gallery = document.getElementById("gallery");
+  try {
+    const r = await fetch(`${API}/api/preview/latest?limit=6&band=${currentBand}`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error("status " + r.status);
+    const d = await r.json();
+
+    if (!d.items || d.items.length === 0) {
+      gallery.innerHTML = `<div class="no-data">${Icons.svg("satellite", 28)}<span>Belum ada citra siap pakai. Jalankan pipeline untuk memproses citra pertama.</span></div>`;
+      return;
+    }
+
+    gallery.innerHTML = d.items.slice(0, 6).map((item) => {
+      const dt = item.acquisition_datetime
+        ? new Date(item.acquisition_datetime).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })
+        : "-";
+      const flag = item.quality_flag || "UNCHECKED";
+      const tagClass = flag === "PASS" ? "pass" : flag === "FAIL" ? "fail" : flag === "WARNING" ? "warn" : "";
+      const tagIcon = flag === "PASS" ? "check" : flag === "FAIL" ? "x" : "alert";
+      const score = item.quality_score !== null && item.quality_score !== undefined ? item.quality_score.toFixed(1) : "";
+      const thumbSrc = item.file_exists_on_disk ? `${API}${item.thumbnail_url}&width=500` : "";
+      return `
+        <div class="img-card">
+          <img src="${thumbSrc}" alt="Citra Sentinel-1 ${item.band_name} ${dt}" loading="lazy"
+               onerror="this.style.background='#1a1a1a'; this.removeAttribute('src')">
+          <div class="img-body">
+            <div class="img-date">${dt}</div>
+            <div class="img-sub">Scene #${item.scene_id} - ${(item.file_size_mb || 0).toFixed(1)} MB</div>
+            <div class="img-tags">
+              <span class="tag band">${item.band_name}</span>
+              ${tagClass ? `<span class="tag ${tagClass}">${Icons.svg(tagIcon, 11)}${flag}${score ? " " + score : ""}</span>` : ""}
+            </div>
+            <a class="btn btn-ghost img-download" href="${API}/api/products/${item.product_id}/download">${Icons.svg("download", 14)}<span>Unduh</span></a>
+          </div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    gallery.innerHTML = `<div class="no-data">${Icons.svg("alert", 28)}<span>Gagal memuat citra terbaru</span></div>`;
+  }
+}
+
+function set(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+async function refreshAll() {
+  await Promise.all([checkApi(), loadStats(), loadRail(), loadGallery()]);
+}
+
+buildChrome();
+refreshAll();
+setInterval(checkApi, 15000);
+setInterval(loadRail, 8000);
+setInterval(() => { loadStats(); loadGallery(); }, 60000);
+</script>
+</body>
+</html>

@@ -1,21 +1,4 @@
 # etl/module6_analytics.py
-"""
-Module 6: Quality Analytics & Visualization.
-
-Responsibilities:
-    - Compute radiometric statistics per band (mean, std, min, max in dB)
-    - Calculate quality score (0-100) from nodata %, speckle index, radiometric range
-    - Generate quality report plots (histogram, spatial map)
-    - Write results to database via MetadataManager
-
-Author : Julius Marselinus (BRONTO) - NIM 00000111989
-Program: Sistem Informasi - Universitas Multimedia Nusantara
-
-Integration hook (called by module5_orchestrator.py):
-    from etl.module6_analytics import run
-    metrics = run(scene_id, gold_products, db)
-"""
-
 from __future__ import annotations
 
 import logging
@@ -23,30 +6,40 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import rasterio
 
 logger = logging.getLogger(__name__)
 
-# Valid backscatter range for Sentinel-1 IW GRD (dB)
 VALID_BACKSCATTER_MIN = -35.0
-VALID_BACKSCATTER_MAX =   5.0
+VALID_BACKSCATTER_MAX = 5.0
 
 
 @dataclass
 class BandMetrics:
-    """Quality metrics for a single raster band."""
-    band_name:               str
-    total_pixels:            int
-    valid_pixels:            int
-    nodata_pixels:           int
-    nodata_percent:          float
-    backscatter_mean_db:     float
-    backscatter_std_db:      float
-    backscatter_min_db:      float
-    backscatter_max_db:      float
-    speckle_index:           float   # CV = std / |mean|
+    band_name: str
+    total_pixels: int
+    valid_pixels: int
+    nodata_pixels: int
+    nodata_percent: float
+    backscatter_mean_db: float
+    backscatter_std_db: float
+    backscatter_min_db: float
+    backscatter_max_db: float
+    speckle_index: float
     radiometric_consistency: bool
-    quality_score:           float   # 0-100
-    quality_flag:            str     # PASS / FAIL / WARNING
+    quality_score: float
+    quality_flag: str
+
+
+def compute_quality_score(
+    nodata_percent: float,
+    speckle_index: float,
+    radiometric_ok: bool,
+) -> float:
+    nodata_component = 50.0 * (1.0 - min(nodata_percent / 100.0, 1.0))
+    speckle_component = 30.0 * max(0.0, 1.0 - speckle_index)
+    radiometric_component = 20.0 if radiometric_ok else 0.0
+    return round(min(100.0, nodata_component + speckle_component + radiometric_component), 2)
 
 
 def compute_band_metrics(
@@ -56,36 +49,48 @@ def compute_band_metrics(
     cloud_threshold: float = 20.0,
     min_quality_score: float = 60.0,
 ) -> BandMetrics:
-    """
-    Compute radiometric quality metrics for a single raster band.
+    with rasterio.open(file_path) as src:
+        data = src.read(1).astype(np.float32)
+        nodata = src.nodata if src.nodata is not None else nodata_value
 
-    Args:
-        file_path         : Path to GOLD-tier COG GeoTIFF
-        band_name         : 'VV' or 'VH'
-        nodata_value      : Pixel value indicating missing data
-        cloud_threshold   : Max nodata% before flagging as cloud contaminated
-        min_quality_score : Threshold below which quality_flag = 'FAIL'
+    total = int(data.size)
+    valid_mask = data != nodata
+    valid = data[valid_mask]
+    nodata_count = total - int(valid.size)
+    nodata_percent = round((nodata_count / total) * 100, 2) if total else 0.0
 
-    Returns:
-        BandMetrics dataclass with all computed statistics
+    if valid.size == 0:
+        mean_db = std_db = min_db = max_db = 0.0
+        speckle = 1.0
+        radiometric_ok = False
+    else:
+        mean_db = float(np.mean(valid))
+        std_db = float(np.std(valid))
+        min_db = float(np.min(valid))
+        max_db = float(np.max(valid))
+        speckle = round(std_db / abs(mean_db), 4) if mean_db != 0 else 1.0
+        radiometric_ok = VALID_BACKSCATTER_MIN <= mean_db <= VALID_BACKSCATTER_MAX
 
-    TODO: Replace stub logic with rasterio-based computation
-    """
-    logger.info("[M6] Computing metrics for %s band=%s",
-                Path(file_path).name, band_name)
+    score = compute_quality_score(nodata_percent, speckle, radiometric_ok)
+    flag = "PASS" if score >= min_quality_score else "FAIL"
 
-    # --- IMPLEMENT ---
-    # import rasterio
-    # with rasterio.open(file_path) as src:
-    #     data = src.read(1).astype(np.float64)
-    #     nodata = src.nodata or nodata_value
-    #
-    # mask = data != nodata
-    # valid = data[mask]
-    # total = data.size
-    # nodata_count = total - valid.size
-    # ...compute stats on valid...
-    raise NotImplementedError("Module 6 analytics not yet implemented")
+    logger.info("[M6] %s band=%s score=%.2f flag=%s", Path(file_path).name, band_name, score, flag)
+
+    return BandMetrics(
+        band_name=band_name,
+        total_pixels=total,
+        valid_pixels=int(valid.size),
+        nodata_pixels=nodata_count,
+        nodata_percent=nodata_percent,
+        backscatter_mean_db=round(mean_db, 4),
+        backscatter_std_db=round(std_db, 4),
+        backscatter_min_db=round(min_db, 4),
+        backscatter_max_db=round(max_db, 4),
+        speckle_index=speckle,
+        radiometric_consistency=radiometric_ok,
+        quality_score=score,
+        quality_flag=flag,
+    )
 
 
 def generate_quality_plot(
@@ -93,105 +98,58 @@ def generate_quality_plot(
     output_path: str,
     scene_id: int,
 ) -> str:
-    """
-    Generate a quality summary plot (histogram + stats table).
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    Args:
-        metrics     : List of BandMetrics (one per band)
-        output_path : Output path for PNG plot
-        scene_id    : Scene ID for plot title
-
-    Returns:
-        output_path of the saved plot
-
-    TODO: Implement with matplotlib
-    """
-    logger.info("[M6] Generating quality plot for scene=%d", scene_id)
-    # --- IMPLEMENT ---
-    # import matplotlib.pyplot as plt
-    # fig, axes = plt.subplots(1, len(metrics), figsize=(12, 5))
-    # ...
-    raise NotImplementedError("Module 6 quality plot not yet implemented")
-
-
-def compute_quality_score(
-    nodata_percent: float,
-    speckle_index: float,
-    radiometric_ok: bool,
-) -> float:
-    """
-    Compute composite quality score (0-100).
-
-    Scoring breakdown:
-        50 pts  : nodata penalty (50 * (1 - nodata_percent/100))
-        30 pts  : speckle penalty (30 * max(0, 1 - speckle_index))
-        20 pts  : radiometric consistency (20 if True, 0 if False)
-
-    Args:
-        nodata_percent  : Percentage of nodata pixels (0-100)
-        speckle_index   : Coefficient of variation of backscatter
-        radiometric_ok  : Whether backscatter range is within valid bounds
-
-    Returns:
-        Float quality score in range [0, 100]
-    """
-    nodata_component      = 50.0 * (1.0 - min(nodata_percent / 100.0, 1.0))
-    speckle_component     = 30.0 * max(0.0, 1.0 - speckle_index)
-    radiometric_component = 20.0 if radiometric_ok else 0.0
-    return round(min(100.0, nodata_component + speckle_component + radiometric_component), 2)
+    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 5))
+    if len(metrics) == 1:
+        axes = [axes]
+    for ax, m in zip(axes, metrics):
+        ax.bar(
+            ["mean", "std", "min", "max"],
+            [m.backscatter_mean_db, m.backscatter_std_db, m.backscatter_min_db, m.backscatter_max_db],
+        )
+        ax.set_title(f"{m.band_name} score={m.quality_score}")
+    fig.suptitle(f"scene_{scene_id}")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 
 def run(
     scene_id: int,
-    gold_products: dict[str, str],  # {'VV': vv_cog_path, 'VH': vh_cog_path}
-    db,                             # DatabaseClient instance
+    gold_products: dict[str, str],
+    db,
     analytics_dir: str = "analytics",
 ) -> list[BandMetrics]:
-    """
-    Main entry point for Module 6. Computes metrics and writes to DB.
-
-    Args:
-        scene_id      : Scene ID for DB insertion
-        gold_products : Dict mapping band name → COG file path
-        db            : DatabaseClient instance
-        analytics_dir : Directory to save quality plots
-
-    Returns:
-        List of BandMetrics (one per band)
-    """
     from etl.metadata_manager import MetadataManager
-    meta    = MetadataManager(db)
-    results = []
 
+    meta = MetadataManager(db)
+    results = []
     for band_name, file_path in gold_products.items():
         m = compute_band_metrics(file_path, band_name)
         results.append(m)
-
-        # Get product_id for this band's GOLD product
         products = meta.get_products_by_scene(scene_id, tier="GOLD")
-        product_id = next(
-            (p["product_id"] for p in products if p["band_name"] == band_name), None
-        )
+        product_id = next((p["product_id"] for p in products if p["band_name"] == band_name), None)
         if not product_id:
-            logger.warning("[M6] No GOLD product found for scene=%d band=%s", scene_id, band_name)
+            logger.warning("[M6] No GOLD product for scene=%d band=%s", scene_id, band_name)
             continue
-
         meta.insert_quality_metrics(
-            scene_id                = scene_id,
-            product_id              = product_id,
-            band_name               = m.band_name,
-            total_pixels            = m.total_pixels,
-            valid_pixels            = m.valid_pixels,
-            nodata_pixels           = m.nodata_pixels,
-            quality_score           = m.quality_score,
-            backscatter_mean_db     = m.backscatter_mean_db,
-            backscatter_std_db      = m.backscatter_std_db,
-            backscatter_min_db      = m.backscatter_min_db,
-            backscatter_max_db      = m.backscatter_max_db,
-            radiometric_consistency = m.radiometric_consistency,
-            speckle_index           = m.speckle_index,
-            quality_flag            = m.quality_flag,
+            scene_id=scene_id,
+            product_id=product_id,
+            band_name=m.band_name,
+            total_pixels=m.total_pixels,
+            valid_pixels=m.valid_pixels,
+            nodata_pixels=m.nodata_pixels,
+            quality_score=m.quality_score,
+            backscatter_mean_db=m.backscatter_mean_db,
+            backscatter_std_db=m.backscatter_std_db,
+            backscatter_min_db=m.backscatter_min_db,
+            backscatter_max_db=m.backscatter_max_db,
+            radiometric_consistency=m.radiometric_consistency,
+            speckle_index=m.speckle_index,
+            quality_flag=m.quality_flag,
         )
-
-    logger.info("[M6] Complete for scene=%d: %d bands processed", scene_id, len(results))
     return results
