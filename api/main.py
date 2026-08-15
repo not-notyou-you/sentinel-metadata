@@ -1,24 +1,19 @@
 # api/main.py
 from __future__ import annotations
-
 from dotenv import load_dotenv
 load_dotenv()
-
 import logging
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
-
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-
 from etl.database_client import DatabaseClient
-from api.routes import health, lineage, pipeline, preview, products, quality, scenes, storage
+from api.routes import datasets, health, lineage, live, pipeline, preview, products, quality, scenes, storage
 
 logger = logging.getLogger(__name__)
-
 _db_client: DatabaseClient | None = None
 
 
@@ -48,9 +43,10 @@ app = FastAPI(
     title="Sentinel-1 Flood Detection Data Pipeline API",
     description=(
         "REST API for querying Sentinel-1 SAR scenes, data products, "
-        "quality metrics, and transformation lineage for flood detection research."
+        "quality metrics, transformation lineage, dataset management, "
+        "and live monitoring for flood detection research."
     ),
-    version="1.1.0",
+    version="1.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -92,5 +88,6 @@ app.include_router(lineage.router, prefix="/api/metadata", tags=["Lineage"])
 app.include_router(preview.router, prefix="/api/preview", tags=["Preview"])
 app.include_router(storage.router, prefix="/api/storage", tags=["Storage"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
-
+app.include_router(datasets.router, prefix="/api/datasets", tags=["Datasets"])
+app.include_router(live.router, prefix="/api/live", tags=["Live"])
 app.mount("/", StaticFiles(directory="web", html=True), name="web")

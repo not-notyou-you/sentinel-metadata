@@ -54,7 +54,10 @@ def compute_band_metrics(
         nodata = src.nodata if src.nodata is not None else nodata_value
 
     total = int(data.size)
-    valid_mask = data != nodata
+    if isinstance(nodata, float) and np.isnan(nodata):
+        valid_mask = ~np.isnan(data)
+    else:
+        valid_mask = data != nodata
     valid = data[valid_mask]
     nodata_count = total - int(valid.size)
     nodata_percent = round((nodata_count / total) * 100, 2) if total else 0.0
