@@ -8,6 +8,7 @@ from etl.database_client import (
     CleanupOperation,
     Dataset,
     DatabaseClient,
+    DataProduct,
     DatasetJob,
     SceneJobState,
 )
@@ -173,6 +174,13 @@ class DatasetManager:
                 return None
             return self._dataset_to_dict(dataset, detail=True)
 
+    def get_live_dataset(self) -> dict | None:
+        with self._db.session() as sess:
+            dataset = sess.scalar(select(Dataset).where(Dataset.dataset_kind == "LIVE"))
+            if dataset is None:
+                return None
+            return self._dataset_to_dict(dataset, detail=True)
+
     def get_progress(self, dataset_id: int) -> dict | None:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
@@ -227,6 +235,62 @@ class DatasetManager:
             "pause_reason": job_dict["pause_reason"],
             "scenes": scenes,
         }
+
+    def toggle_live(self, enabled: bool) -> dict:
+        live = self.get_live_dataset()
+        if live is None:
+            raise ValueError("Dataset live belum ada")
+        dataset_id = live["dataset_id"]
+        with self._db.session() as sess:
+            dataset = sess.get(Dataset, dataset_id)
+            if dataset:
+                dataset.live_enabled = enabled
+        logger.info("[DATASET] live dataset_id=%d enabled=%s", dataset_id, enabled)
+        return {"enabled": enabled}
+
+    def clear_live_dataset(self) -> dict:
+        live = self.get_live_dataset()
+        if live is None:
+            raise ValueError("Dataset live belum ada")
+        dataset_id = live["dataset_id"]
+
+        from etl.deletion_manager import DeletionManager
+        file_result = DeletionManager(self._db, dataset_id).clear_files_only()
+
+        with self._db.session() as sess:
+            sess.query(DataProduct).filter(DataProduct.dataset_id == dataset_id).delete(synchronize_session=False)
+            sess.query(DatasetJob).filter(DatasetJob.dataset_id == dataset_id).delete(synchronize_session=False)
+            dataset = sess.get(Dataset, dataset_id)
+            if dataset:
+                dataset.total_scenes = 0
+                dataset.completed_scenes = 0
+                dataset.failed_scenes = 0
+                dataset.total_size_bytes = 0
+                dataset.status = "DRAFT"
+
+        logger.info("[DATASET] live dataset_id=%d dikosongkan", dataset_id)
+        return {"cleared": True, **file_result}
+
+    def trigger_live_backfill(self, date_start: date, date_end: date) -> dict:
+        live = self.get_live_dataset()
+        if live is None:
+            raise ValueError("Dataset live belum ada")
+        dataset_id = live["dataset_id"]
+        with self._db.session() as sess:
+            job = DatasetJob(
+                dataset_id=dataset_id,
+                job_type="BACKFILL",
+                status="QUEUED",
+                date_range_start=date_start,
+                date_range_end=date_end,
+            )
+            sess.add(job)
+            sess.flush()
+            job_id = job.job_id
+        self._spawn_job_runner(job_id)
+        logger.info("[DATASET] live backfill job_id=%d dataset_id=%d range=%s..%s",
+                    job_id, dataset_id, date_start, date_end)
+        return {"job_id": job_id, "status": "QUEUED"}
 
     def pause_dataset(self, dataset_id: int, reason: str = "user_requested") -> dict:
         with self._db.session() as sess:
@@ -350,6 +414,18 @@ class DatasetManager:
                 if dataset:
                     dataset.total_scenes = len(product_identifiers)
         return created
+
+    def get_scene_job_state(self, job_id: int, product_identifier: str) -> dict | None:
+        with self._db.session() as sess:
+            row = sess.scalar(
+                select(SceneJobState).where(
+                    SceneJobState.job_id == job_id,
+                    SceneJobState.product_identifier == product_identifier,
+                )
+            )
+            if row is None:
+                return None
+            return self._scene_state_to_dict(row)
 
     def upsert_scene_job_state(self, job_id: int, product_identifier: str, **fields) -> int:
         with self._db.session() as sess:

@@ -13,6 +13,7 @@ from etl.database_client import (
     DataProduct,
     DatabaseClient,
     JobStatusEnum,
+    NasaScene,
     ProcessingJob,
     ProcessingStage,
     ProductTierEnum,
@@ -207,6 +208,20 @@ class MetadataManager:
         logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s dataset=%s file=%s",
                     product_id, scene_id, band_name, product_tier, dataset_id, file_name)
         return product_id
+
+    def mark_products_invalid(self, scene_id: int, dataset_id: int | None, tier: str) -> None:
+        with self._db.session() as sess:
+            stmt = select(DataProduct).where(
+                DataProduct.scene_id == scene_id,
+                DataProduct.product_tier == ProductTierEnum(tier),
+            )
+            if dataset_id is not None:
+                stmt = stmt.where(DataProduct.dataset_id == dataset_id)
+            rows = sess.scalars(stmt).all()
+            for r in rows:
+                r.is_valid = False
+        logger.info("[PRODUCT] scene=%d tier=%s dataset=%s ditandai is_valid=False (file dihapus)",
+                    scene_id, tier, dataset_id)
 
     def insert_quality_metrics(
         self,
@@ -499,3 +514,58 @@ class MetadataManager:
                 }
                 for j in jobs
             ]
+
+    def insert_nasa_scene(
+        self,
+        source: str,
+        tile_id: str,
+        product_short_name: str,
+        acquisition_date,
+        region_id: int,
+        raw_file_path: str | None = None,
+        download_url: str | None = None,
+    ) -> int:
+        with self._db.session() as sess:
+            existing = sess.scalar(
+                select(NasaScene.nasa_scene_id).where(
+                    NasaScene.source == source,
+                    NasaScene.tile_id == tile_id,
+                    NasaScene.product_short_name == product_short_name,
+                    NasaScene.acquisition_date == acquisition_date,
+                )
+            )
+            if existing:
+                return existing
+            scene = NasaScene(
+                source=source,
+                tile_id=tile_id,
+                product_short_name=product_short_name,
+                acquisition_date=acquisition_date,
+                region_id=region_id,
+                raw_file_path=raw_file_path,
+                download_url=download_url,
+                is_available=True,
+            )
+            sess.add(scene)
+            sess.flush()
+            nasa_scene_id = scene.nasa_scene_id
+        logger.info("[NASA] Registered nasa_scene_id=%d source=%s tile=%s date=%s",
+                    nasa_scene_id, source, tile_id, acquisition_date)
+        return nasa_scene_id
+
+    def get_nasa_scene(
+        self,
+        source: str,
+        tile_id: str,
+        product_short_name: str,
+        acquisition_date,
+    ) -> int | None:
+        with self._db.session() as sess:
+            return sess.scalar(
+                select(NasaScene.nasa_scene_id).where(
+                    NasaScene.source == source,
+                    NasaScene.tile_id == tile_id,
+                    NasaScene.product_short_name == product_short_name,
+                    NasaScene.acquisition_date == acquisition_date,
+                )
+            )

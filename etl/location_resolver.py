@@ -1,5 +1,6 @@
 # etl/location_resolver.py
 from __future__ import annotations
+import hashlib
 import logging
 from geoalchemy2.shape import to_shape
 from sqlalchemy import select
@@ -51,12 +52,36 @@ def _geocode_nominatim(location: str) -> tuple[str, str]:
     return bbox_wkt, label
 
 
-def resolve_location(db: DatabaseClient, location: str) -> tuple[str, int | None, str]:
+def _create_region_from_geocode(db: DatabaseClient, bbox_wkt: str, label: str, location: str) -> int:
+    code = "AUTO" + hashlib.md5(bbox_wkt.encode()).hexdigest()[:12].upper()
+    with db.session() as sess:
+        existing = sess.scalar(
+            select(RegionOfInterest.region_id).where(RegionOfInterest.region_code == code)
+        )
+        if existing:
+            return existing
+        region = RegionOfInterest(
+            region_code=code,
+            name=label[:100],
+            description=f"Auto-created dari geocoding lokasi: {location}",
+            bbox=f"SRID=4326;{bbox_wkt}",
+            admin_level=3,
+            country_code="ID",
+            is_active=True,
+        )
+        sess.add(region)
+        sess.flush()
+        region_id = region.region_id
+    return region_id
+
+
+def resolve_location(db: DatabaseClient, location: str) -> tuple[str, int, str]:
     known = _match_known_region(db, location)
     if known:
         bbox_wkt, region_id, label = known
         logger.info("[LOCATION] '%s' matched known region_id=%d", location, region_id)
         return bbox_wkt, region_id, label
     bbox_wkt, label = _geocode_nominatim(location)
-    logger.info("[LOCATION] '%s' geocoded via Nominatim -> %s", location, label)
-    return bbox_wkt, None, label
+    region_id = _create_region_from_geocode(db, bbox_wkt, label, location)
+    logger.info("[LOCATION] '%s' geocoded via Nominatim -> %s (region_id=%d)", location, label, region_id)
+    return bbox_wkt, region_id, label

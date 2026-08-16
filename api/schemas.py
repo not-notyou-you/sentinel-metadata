@@ -407,3 +407,16 @@ class LiveSceneItem(BaseModel):
     scene_date: datetime
     tier: str
     size_mb: float
+
+
+class RegionItem(BaseModel):
+    region_id: int
+    region_code: str
+    name: str
+    description: str | None
+    bbox: list[float]
+    area_km2: float | None
+
+
+class RegionListResponse(BaseModel):
+    items: list[RegionItem]

@@ -655,6 +655,29 @@ class LiveDatasetSource(Base):
         return f"<LiveDatasetSource id={self.id} source={self.source_name} enabled={self.enabled}>"
 
 
+class NasaScene(Base):
+    __tablename__ = "nasa_scenes"
+    __table_args__ = (
+        UniqueConstraint("source", "tile_id", "product_short_name", "acquisition_date",
+                          name="uq_nasa_scene"),
+    )
+    nasa_scene_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source = Column(String(20), nullable=False)
+    tile_id = Column(String(10), nullable=False)
+    product_short_name = Column(String(50), nullable=False)
+    acquisition_date = Column(Date, nullable=False)
+    region_id = Column(Integer, ForeignKey("regions_of_interest.region_id", ondelete="RESTRICT"), nullable=False)
+    raw_file_path = Column(Text)
+    download_url = Column(Text)
+    is_available = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    region = relationship("RegionOfInterest")
+
+    def __repr__(self) -> str:
+        return f"<NasaScene id={self.nasa_scene_id} source={self.source} tile={self.tile_id} date={self.acquisition_date}>"
+
+
 class DatabaseClient:
     _RETRY_ATTEMPTS = 3
     _RETRY_BACKOFF = 2.0
