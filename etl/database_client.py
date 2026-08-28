@@ -23,12 +23,14 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Computed,
+    Date,
     DateTime,
     Enum,
     Float,
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     SmallInteger,
     String,
@@ -36,6 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     event,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
@@ -679,3 +682,111 @@ class DatabaseClient:
         """Close all pooled connections."""
         self._engine.dispose()
         logger.info("DatabaseClient disposed. All connections closed.")
+
+
+class Dataset(Base):
+    __tablename__ = 'datasets'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    location = Column(String, nullable=False)
+    date_start = Column(Date, nullable=False)
+    date_end = Column(Date, nullable=False)
+    required_tiers = Column(JSON)
+    quality_settings = Column(JSON)
+    status = Column(String, default='QUEUED')
+    created_at = Column(DateTime, default=func.now())
+    user_id = Column(Integer)
+
+    products = relationship('DatasetProduct', backref='dataset')
+
+    def __repr__(self):
+        return f'<Dataset(id={self.id}, name={self.name}, status={self.status})>'
+
+
+class DatasetProduct(Base):
+    __tablename__ = 'dataset_products'
+    id = Column(Integer, primary_key=True)
+    dataset_id = Column(Integer, ForeignKey('datasets.id'), nullable=False)
+    product_id = Column(Integer, nullable=False)
+    processing_order = Column(Integer)
+
+    def __repr__(self):
+        return f'<DatasetProduct(id={self.id}, dataset_id={self.dataset_id})>'
+
+
+class LiveConfig(Base):
+    __tablename__ = 'live_config'
+    id = Column(Integer, primary_key=True)
+    enabled = Column(Boolean, default=False)
+    backfill_date_start = Column(Date)
+    backfill_date_end = Column(Date)
+    last_check_datetime = Column(DateTime)
+    updated_at = Column(DateTime, default=func.now())
+
+    def __repr__(self):
+        return f'<LiveConfig(enabled={self.enabled})>'
+
+
+class DatasetScene(Base):
+    __tablename__ = 'dataset_scenes'
+    id = Column(Integer, primary_key=True)
+    dataset_id = Column(Integer, ForeignKey('datasets.id'), nullable=False)
+    scene_id = Column(Integer, nullable=False)
+    stage_name = Column(String)
+    status = Column(String)
+    progress_percent = Column(Integer)
+    error_message = Column(String)
+
+    def __repr__(self):
+        return f'<DatasetScene(dataset_id={self.dataset_id}, stage={self.stage_name})>'
+
+
+class NasaScene(Base):
+    """Registry of NASA-sourced granules (MODIS, GPM) used in fusion."""
+
+    __tablename__ = "nasa_scenes"
+    __table_args__ = (
+        UniqueConstraint("source", "tile_id", "product_short_name", "acquisition_date",
+                         name="uq_nasa_scene"),
+    )
+
+    nasa_scene_id      = Column(BigInteger, primary_key=True, autoincrement=True)
+    source             = Column(String(20), nullable=False)
+    tile_id            = Column(String(10), nullable=False)
+    product_short_name = Column(String(50), nullable=False)
+    acquisition_date   = Column(Date, nullable=False)
+    region_id          = Column(Integer, ForeignKey("regions_of_interest.region_id",
+                                                     ondelete="RESTRICT"), nullable=False)
+    raw_file_path      = Column(Text)
+    download_url       = Column(Text)
+    is_available       = Column(Boolean, nullable=False, default=True)
+    created_at         = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    def __repr__(self) -> str:
+        return f"<NasaScene id={self.nasa_scene_id} source={self.source} date={self.acquisition_date}>"
+
+
+class FusionProduct(Base):
+    """Multi-sensor (S1 + MODIS + GPM) feature stack registry for ML training."""
+
+    __tablename__ = "fusion_products"
+    __table_args__ = (
+        UniqueConstraint("feature_date", "region_id", name="uq_fusion_date_region"),
+    )
+
+    fusion_id          = Column(BigInteger, primary_key=True, autoincrement=True)
+    feature_date       = Column(Date, nullable=False)
+    region_id          = Column(Integer, ForeignKey("regions_of_interest.region_id",
+                                                     ondelete="RESTRICT"), nullable=False)
+    s1_scene_id        = Column(Integer, ForeignKey("satellite_scenes.scene_id",
+                                                     ondelete="SET NULL"))
+    modis_scene_id     = Column(BigInteger, ForeignKey("nasa_scenes.nasa_scene_id",
+                                                        ondelete="SET NULL"))
+    gpm_scene_id       = Column(BigInteger, ForeignKey("nasa_scenes.nasa_scene_id",
+                                                        ondelete="SET NULL"))
+    days_since_s1      = Column(Integer, nullable=False)
+    feature_stack_path = Column(Text, nullable=False)
+    created_at         = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    def __repr__(self) -> str:
+        return f"<FusionProduct id={self.fusion_id} date={self.feature_date} path={self.feature_stack_path}>"

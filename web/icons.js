@@ -20,6 +20,7 @@ const Icons = {
     droplet: "M12 3s7 7.6 7 12a7 7 0 11-14 0c0-4.4 7-12 7-12z",
     folder: "M3 6h6l2 2h10v11H3z",
     play: "M7 4l13 8-13 8z",
+    pause: "M8 5v14M16 5v14",
     layers: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 18l9 5 9-5",
     pulse: "M13 2L4 14h6l-1 8 9-12h-6z",
     chevron: "M6 9l6 6 6-6",

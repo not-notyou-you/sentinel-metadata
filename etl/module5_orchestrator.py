@@ -9,17 +9,20 @@ from pathlib import Path
 from typing import Callable
 
 import rasterio
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from etl.database_client import (
     AlertEventTypeEnum,
     AlertSeverityEnum,
     DatabaseClient,
     DataProduct,
+    Dataset,
+    DatasetScene,
     JobStatusEnum,
     ProcessingJob,
     ProcessingStage,
     ProductTierEnum,
+    RegionOfInterest,
 )
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
@@ -367,3 +370,182 @@ class PipelineOrchestrator:
         }
         logger.info("[ORCH] batch complete: %s", summary)
         return summary
+
+
+# ---------------------------------------------------------------------------
+# DATASET JOBS (on-demand builds queued via /api/datasets)
+# ---------------------------------------------------------------------------
+
+def _resolve_region(session, location: str) -> tuple[int, str] | None:
+    """Look up a regions_of_interest row by name or region_code (case-insensitive).
+
+    Returns (region_id, bbox_wkt) or None if the dataset's free-text `location`
+    doesn't match a known region.
+    """
+    row = session.execute(
+        select(RegionOfInterest.region_id, func.ST_AsText(RegionOfInterest.bbox))
+        .where(
+            or_(
+                func.lower(RegionOfInterest.name) == location.lower(),
+                func.lower(RegionOfInterest.region_code) == location.lower(),
+            )
+        )
+    ).first()
+    return tuple(row) if row else None
+
+
+def _delete_tier_files(ctx: SceneContext, tier: str) -> float:
+    """Delete the on-disk band files for one intermediate tier, freeing space
+    once a dataset's required_tiers no longer needs them. DB rows for those
+    products are left in place (lineage/history stays intact)."""
+    paths = {
+        "BRONZE": (ctx.crop_vv_path, ctx.crop_vh_path),
+        "SILVER": (ctx.lee_vv_path, ctx.lee_vh_path),
+    }.get(tier, ())
+
+    freed_mb = 0.0
+    for path in paths:
+        if path and Path(path).exists():
+            freed_mb += Path(path).stat().st_size / (1024 ** 2)
+            Path(path).unlink(missing_ok=True)
+
+    if freed_mb:
+        logger.info("[ORCH] tier=%s intermediate files removed, freed %.1f MB", tier, freed_mb)
+    return freed_mb
+
+
+def run_dataset_job(dataset_id: int, session) -> dict:
+    """
+    Run the full pipeline (DOWNLOAD → CROP → LEE_FILTER → COG_EXPORT →
+    QUALITY_ANALYTICS) over every scene found for a queued Dataset's
+    location/date range, applying tier-based cleanup once GOLD exists.
+
+    `session` is used for Dataset/DatasetScene bookkeeping only. Stage
+    execution (processing_jobs, data_products, quality_metrics) runs through
+    a PipelineOrchestrator on its own DatabaseClient, same as run_pipeline_once
+    in etl/scheduler.py.
+    """
+    import etl.module1_download as m1
+
+    dataset = session.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        return {"error": "Dataset not found"}
+
+    region = _resolve_region(session, dataset.location)
+    if region is None:
+        dataset.status = "FAILED"
+        session.commit()
+        return {"error": f"Unknown location: {dataset.location}"}
+    region_id, bbox_wkt = region
+
+    required_tiers = set(dataset.required_tiers or [])
+    date_from = datetime.combine(dataset.date_start, datetime.min.time(), tzinfo=timezone.utc)
+    date_to = datetime.combine(dataset.date_end, datetime.min.time(), tzinfo=timezone.utc)
+
+    db = DatabaseClient.from_env()
+    orch = PipelineOrchestrator(db)
+
+    stage_plan = [
+        ("DOWNLOAD", orch._stage_download, {}),
+        ("CROP", orch._stage_crop, {"bbox": dataset.location}),
+        ("LEE_FILTER", orch._stage_lee_filter, {"window_size": 7}),
+        ("COG_EXPORT", orch._stage_cog_export, {"compression": "LZW"}),
+        ("QUALITY_ANALYTICS", orch._stage_quality_analytics, {}),
+    ]
+
+    total_scenes = 0
+    completed_scenes = 0
+    failed_scenes = 0
+
+    dataset.status = "PROCESSING"
+    session.commit()
+
+    try:
+        scenes = m1.discover_scenes(bbox_wkt=bbox_wkt, date_from=date_from, date_to=date_to)
+        logger.info("[ORCH] dataset=%d found %d scene(s) for %s", dataset_id, len(scenes), dataset.location)
+
+        for scene_meta in scenes:
+            total_scenes += 1
+            # scene_id is unknown until download+registration succeed; 0 is a
+            # placeholder (dataset_scenes.scene_id is NOT NULL) for a scene that
+            # failed before it could be registered.
+            scene_id = 0
+            stage_name = "DOWNLOAD"
+            dataset_scene = DatasetScene(
+                dataset_id=dataset_id,
+                scene_id=scene_id,
+                stage_name=stage_name,
+                status="RUNNING",
+                progress_percent=0,
+            )
+            session.add(dataset_scene)
+            session.commit()
+
+            try:
+                result = m1.download_scene(scene_meta, output_dir="recovered_temp", keep_raw=True)
+
+                scene_id = orch._meta.insert_satellite_scene(
+                    product_identifier=result.product_identifier,
+                    acquisition_datetime=result.acquisition_datetime,
+                    region_id=region_id,
+                    bbox_wkt=bbox_wkt,
+                    orbit_direction=result.orbit_direction,
+                    orbit_number=result.orbit_number,
+                    relative_orbit=result.relative_orbit,
+                    cloud_cover_percent=result.cloud_cover,
+                    raw_file_path=result.zip_path if result.kept_raw else None,
+                    raw_file_size_mb=result.file_size_mb,
+                    download_url=result.download_url,
+                    checksum_md5=result.checksum_md5,
+                )
+                dataset_scene.scene_id = scene_id
+
+                ctx = SceneContext(
+                    scene_id=scene_id,
+                    product_identifier=result.product_identifier,
+                    region_id=region_id,
+                    raw_file_path=result.zip_path,
+                    raw_vv_path=result.vv_tif_path,
+                    raw_vh_path=result.vh_tif_path,
+                )
+
+                for i, (stage_name, fn, params) in enumerate(stage_plan, start=1):
+                    dataset_scene.stage_name = stage_name
+                    session.commit()
+
+                    if not orch._run_stage(ctx, stage_name, fn, params):
+                        raise RuntimeError(ctx.error_message or f"{stage_name} failed")
+
+                    if stage_name == "COG_EXPORT":
+                        for tier in ("BRONZE", "SILVER"):
+                            if tier not in required_tiers:
+                                _delete_tier_files(ctx, tier)
+
+                    dataset_scene.progress_percent = int(100 * i / len(stage_plan))
+                    session.commit()
+
+                dataset_scene.status = "COMPLETED"
+                completed_scenes += 1
+
+            except Exception as exc:
+                dataset_scene.status = "FAILED"
+                dataset_scene.error_message = str(exc)
+                failed_scenes += 1
+                logger.error(
+                    "[ORCH] dataset=%d scene=%s failed at stage=%s: %s",
+                    dataset_id, scene_id or "?", stage_name, exc, exc_info=True,
+                )
+
+            session.commit()
+
+    finally:
+        db.dispose()
+
+    dataset.status = "COMPLETED" if failed_scenes == 0 else "COMPLETED_WITH_ERRORS"
+    session.commit()
+
+    logger.info(
+        "[ORCH] dataset=%d job complete: total=%d completed=%d failed=%d",
+        dataset_id, total_scenes, completed_scenes, failed_scenes,
+    )
+    return {"total": total_scenes, "completed": completed_scenes, "failed": failed_scenes}

@@ -5,377 +5,1175 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sentinel Sentinel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 :root {
-  --bg: #0d1117; --s1: #161b22; --s2: #1c2128; --border: #30363d;
-  --text: #e6edf3; --muted: #7d8590;
-  --green: #3fb950; --gdim: #238636; --blue: #388bfd;
-  --amber: #d29922; --red: #f85149; --purple: #bc8cff;
-  --font: system-ui, -apple-system, sans-serif;
+  --ink: #0A0E1A;
+  --panel: #121A2B;
+  --text: #E8ECF5;
+  --text-dim: #7C89A6;
+  --cyan: #35D0C0;
+  --amber: #F0A63C;
+  --coral: #EF6461;
+  --violet: #8B7FE8;
+  --bronze: #C97C4B;
+  --silver: #9FB0C9;
+  --border: rgba(232,236,245,0.08);
+  --border-strong: rgba(232,236,245,0.16);
+  --raise: rgba(255,255,255,0.035);
+  --raise-2: rgba(255,255,255,0.06);
+  --font-sans: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.6; }
-a { color: inherit; text-decoration: none; }
+html, body { background: var(--ink); }
+body {
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 4px; }
 
-.header {
-  position: sticky; top: 0; z-index: 10;
-  background: rgba(13,17,23,0.92); backdrop-filter: blur(6px);
+/* ---------- top navigation ---------- */
+.topnav {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 20px;
+  padding: 14px 28px;
+  background: rgba(10,14,26,0.92);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
-  padding: 12px 24px; display: flex; align-items: center; gap: 20px;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; flex-shrink: 0; color: var(--green); }
-.nav { display: flex; gap: 4px; flex: 1; }
-.nav a { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 13px; color: var(--muted); }
-.nav a:hover { background: var(--s2); color: var(--text); }
-.nav a.current { color: var(--text); background: var(--s2); }
-.nav .tag { font-size: 9px; color: var(--purple); border: 1px solid var(--purple); border-radius: 4px; padding: 0 4px; margin-left: 2px; }
-.pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; flex-shrink: 0; }
-.pill.ok { background: #1a2d1e; color: var(--green); border: 1px solid #238636; }
-.pill.err { background: #2d1a1a; color: var(--red); border: 1px solid #6e1a1a; }
-.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-
-.page { max-width: 1200px; margin: 0 auto; padding: 40px 24px 80px; }
-
-.hero { margin-bottom: 40px; }
-.hero-badge { display: inline-flex; align-items: center; gap: 6px; color: var(--blue); font-size: 12px; font-weight: 600; margin-bottom: 12px; }
-.hero h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; max-width: 640px; }
-.hero p { color: var(--muted); font-size: 15px; margin-top: 10px; max-width: 560px; }
-
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 28px; }
-.stat { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-.stat-val { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.stat-label { font-size: 11px; color: var(--muted); margin-top: 3px; }
-.stat.green .stat-val { color: var(--green); }
-.stat.blue .stat-val { color: var(--blue); }
-.stat.amber .stat-val { color: var(--amber); }
-
-.section { margin-top: 48px; }
-.section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
-.section-title { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.section-sub { font-size: 12px; color: var(--muted); }
-
-.rail-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
-.rail-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; flex-wrap: wrap; gap: 8px; }
-.rail-meta .scene-id { font-size: 13px; color: var(--muted); }
-.rail-meta .scene-id strong { color: var(--text); font-family: monospace; }
-.rail-track { display: flex; align-items: center; }
-.rail-node { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; width: 96px; }
-.rail-dot {
-  width: 16px; height: 16px; border-radius: 50%; background: var(--s2); border: 2px solid var(--border);
-  transition: all .3s; position: relative; z-index: 1;
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; flex-shrink: 0; color: var(--cyan); }
+.brand svg { flex-shrink: 0; }
+.tabs { display: flex; gap: 6px; flex: 1; justify-content: center; }
+.tab-btn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 18px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--text-dim); font-weight: 600; font-size: 13.5px; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
 }
-.rail-node.done .rail-dot { background: var(--green); border-color: var(--green); }
-.rail-node.active .rail-dot { background: var(--blue); border-color: var(--blue); animation: pulse 1.4s infinite; }
-.rail-node.failed .rail-dot { background: var(--red); border-color: var(--red); }
-@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(56,139,253,0.5); } 50% { box-shadow: 0 0 0 6px rgba(56,139,253,0); } }
-.rail-label { font-size: 11px; color: var(--muted); margin-top: 8px; text-align: center; line-height: 1.3; }
-.rail-node.done .rail-label, .rail-node.active .rail-label { color: var(--text); }
-.rail-line { flex: 1; height: 2px; background: var(--border); margin: 0 -2px; position: relative; top: -20px; }
-.rail-line.done { background: var(--green); }
-.rail-idle { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 20px 0; color: var(--muted); }
+.tab-btn:hover { color: var(--text); background: var(--raise); }
+.tab-btn.active { background: var(--cyan); color: #04211E; border-color: var(--cyan); }
+.nav-status { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 12.5px; color: var(--text-dim); }
+.nav-status-updated { color: var(--text-dim); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; box-shadow: 0 0 0 3px transparent; }
+.status-dot.online { background: var(--cyan); box-shadow: 0 0 0 3px rgba(53,208,192,0.18); }
+.status-dot.degraded { background: var(--amber); box-shadow: 0 0 0 3px rgba(240,166,60,0.18); }
+.status-dot.offline { background: var(--coral); box-shadow: 0 0 0 3px rgba(239,100,97,0.18); }
 
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 7px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all .12s; }
-.btn-primary { background: var(--gdim); color: #fff; }
-.btn-primary:hover { background: #2ea043; }
-.btn-ghost { background: var(--s2); color: var(--text); border: 1px solid var(--border); }
-.btn-ghost:hover { background: var(--border); }
+/* ---------- page shell ---------- */
+main.page { max-width: 1320px; margin: 0 auto; padding: 28px 28px 80px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.split-6040 { display: grid; grid-template-columns: 3fr 2fr; gap: 24px; align-items: start; }
+
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px; }
+.panel + .panel { margin-top: 18px; }
+
+.section-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-dim); margin-bottom: 12px;
+}
+.section-label svg { color: var(--cyan); flex-shrink: 0; }
+
+/* ---------- form fields ---------- */
+.field-group { margin-bottom: 22px; }
+.field-group:last-child { margin-bottom: 0; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.field-sub-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+.text-input, .date-input, textarea.text-input, select.text-input {
+  width: 100%; padding: 10px 13px; border-radius: 9px;
+  background: var(--raise); border: 1px solid var(--border-strong);
+  color: var(--text); transition: border-color .15s, background .15s;
+}
+.text-input::placeholder { color: var(--text-dim); }
+.text-input:focus, .date-input:focus, textarea.text-input:focus { border-color: var(--cyan); background: var(--raise-2); outline: none; }
+.date-input { color-scheme: dark; }
+textarea.text-input { resize: vertical; min-height: 72px; }
+.required-mark { color: var(--coral); margin-left: 3px; }
+
+/* ---------- region cards ---------- */
+.region-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.region-card {
+  position: relative; text-align: left; cursor: pointer;
+  background: var(--raise); border: 1px solid var(--border-strong); border-radius: 11px;
+  padding: 14px 14px 12px; display: flex; flex-direction: column; gap: 4px;
+  transition: border-color .15s, background .15s;
+  min-height: 44px;
+}
+.region-card:hover { background: var(--raise-2); }
+.region-card.selected { border-color: var(--cyan); background: rgba(53,208,192,0.08); }
+.region-card .region-check { position: absolute; top: 10px; right: 10px; color: var(--cyan); opacity: 0; transition: opacity .15s; }
+.region-card.selected .region-check { opacity: 1; }
+.region-name { font-weight: 600; font-size: 13.5px; }
+.region-area { font-size: 11.5px; color: var(--text-dim); }
+
+/* ---------- map ---------- */
+.map-box { height: 200px; border-radius: 11px; overflow: hidden; border: 1px solid var(--border-strong); }
+#mapContainer { width: 100%; height: 100%; background: #0d1424; }
+.map-fallback {
+  display: none; height: 200px; border-radius: 11px; border: 1px dashed var(--border-strong);
+  align-items: center; justify-content: center; flex-direction: column; gap: 8px;
+  color: var(--text-dim); font-size: 12.5px; text-align: center; padding: 12px;
+}
+
+/* ---------- advanced settings ---------- */
+details.adv-settings { border: 1px solid var(--border-strong); border-radius: 11px; padding: 4px 16px; background: var(--raise); }
+details.adv-settings summary {
+  cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; list-style: none; user-select: none;
+}
+details.adv-settings summary::-webkit-details-marker { display: none; }
+details.adv-settings summary .chevron { transition: transform .18s; color: var(--text-dim); }
+details.adv-settings[open] summary .chevron { transform: rotate(180deg); }
+.adv-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 4px 0 16px; }
+
+/* ---------- tier pills ---------- */
+.tier-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.tier-pill {
+  position: relative; display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 16px; border-radius: 999px; border: 1px solid var(--border-strong);
+  color: var(--text-dim); font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+  min-height: 38px;
+}
+.tier-pill input { position: absolute; opacity: 0; width: 0; height: 0; }
+.tier-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .5; }
+.tier-pill:hover { background: var(--raise); }
+.tier-pill.checked { border-color: var(--cyan); color: var(--text); background: rgba(53,208,192,0.08); }
+.tier-pill.checked .dot { opacity: 1; }
+.tier-pill.tier-all.checked { border-color: var(--text); background: var(--raise-2); }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 10px 18px; border-radius: 9px; font-size: 13.5px; font-weight: 600;
+  border: 1px solid transparent; cursor: pointer; transition: opacity .12s, background .12s, border-color .12s;
+  min-height: 40px; white-space: nowrap;
+}
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--cyan); color: #04211E; }
+.btn-primary:hover:not(:disabled) { opacity: .88; }
+.btn-ghost { background: var(--raise); color: var(--text); border-color: var(--border-strong); }
+.btn-ghost:hover:not(:disabled) { background: var(--raise-2); }
+.btn-amber { background: rgba(240,166,60,0.12); color: var(--amber); border-color: rgba(240,166,60,0.35); }
+.btn-amber:hover:not(:disabled) { background: rgba(240,166,60,0.2); }
+.btn-cyan { background: rgba(53,208,192,0.12); color: var(--cyan); border-color: rgba(53,208,192,0.35); }
+.btn-cyan:hover:not(:disabled) { background: rgba(53,208,192,0.2); }
+.btn-danger { background: rgba(239,100,97,0.12); color: var(--coral); border-color: rgba(239,100,97,0.35); }
+.btn-danger:hover:not(:disabled) { background: rgba(239,100,97,0.2); }
+.btn-block { width: 100%; }
+.btn svg { transition: transform .18s; }
+.btn svg.rotated { transform: rotate(180deg); }
 
-.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-.img-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
-.img-card:hover { border-color: var(--blue); transform: translateY(-2px); }
-.img-card img { width: 100%; aspect-ratio: 16/10; object-fit: cover; background: #1a1a1a; display: block; }
-.img-body { padding: 14px; }
-.img-date { font-size: 13px; font-weight: 600; }
-.img-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
-.img-tags { display: flex; gap: 6px; margin: 10px 0 12px; flex-wrap: wrap; }
-.tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 700; }
-.tag.pass { background: #1a2d1e; color: var(--green); }
-.tag.fail { background: #2d1a1a; color: var(--red); }
-.tag.warn { background: #2d1f00; color: var(--amber); }
-.tag.band { background: var(--s2); color: var(--blue); }
-.img-download { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+/* ---------- tier ring (shared) ---------- */
+.ring-wrap { display: flex; align-items: center; justify-content: center; padding: 6px 0 4px; }
+.tier-circle { transition: fill-opacity .25s; }
+.tier-badge-list { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center; margin-top: 14px; }
+.hint-text { font-size: 12.5px; color: var(--text-dim); margin-top: 18px; padding: 12px 14px; background: var(--raise); border-radius: 9px; }
 
-.skeleton { background: linear-gradient(90deg, var(--s2) 25%, var(--border) 50%, var(--s2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
-@keyframes shimmer { 0%{background-position:200%} 100%{background-position:-200%} }
-.skeleton-card { background: var(--s1); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-.skeleton-img { width: 100%; aspect-ratio: 16/10; }
-.skeleton-body { padding: 14px; display: flex; flex-direction: column; gap: 8px; }
-.sk-line { height: 12px; border-radius: 3px; }
+/* ---------- badges ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.badge.status-completed { color: var(--cyan); background: rgba(53,208,192,0.1); border-color: rgba(53,208,192,0.3); }
+.badge.status-processing { color: var(--silver); background: rgba(159,176,201,0.1); border-color: rgba(159,176,201,0.3); }
+.badge.status-paused { color: var(--amber); background: rgba(240,166,60,0.1); border-color: rgba(240,166,60,0.3); }
+.badge.status-failed { color: var(--coral); background: rgba(239,100,97,0.1); border-color: rgba(239,100,97,0.3); }
+.badge.tier-raw { color: var(--violet); background: rgba(139,127,232,0.1); border-color: rgba(139,127,232,0.3); }
+.badge.tier-bronze { color: var(--bronze); background: rgba(201,124,75,0.12); border-color: rgba(201,124,75,0.32); }
+.badge.tier-silver { color: var(--silver); background: rgba(159,176,201,0.1); border-color: rgba(159,176,201,0.3); }
+.badge.tier-gold { color: var(--cyan); background: rgba(53,208,192,0.1); border-color: rgba(53,208,192,0.3); }
+.badge.muted-badge { color: var(--text-dim); background: var(--raise); border-color: var(--border-strong); }
 
-.no-data { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 48px 24px; color: var(--muted); grid-column: 1/-1; }
+/* ---------- tab 2: dataset saya ---------- */
+.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
+.topbar h2 { font-size: 19px; font-weight: 700; }
+.dataset-list { display: flex; flex-direction: column; gap: 14px; }
+.dataset-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+.card-header { display: flex; gap: 16px; align-items: center; }
+.card-header .mini-ring { flex-shrink: 0; }
+.card-info { flex: 1; min-width: 0; }
+.card-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.card-title { font-size: 15.5px; font-weight: 700; }
+.card-meta { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; }
+.card-tiers { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0; }
+.stat-box { background: var(--raise); border-radius: 10px; padding: 12px; text-align: center; }
+.stat-box .stat-val { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+.stat-box .stat-label { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.scene-table-wrap { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; overflow-x: auto; }
+table.scene-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.scene-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.scene-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; }
+table.scene-table td.muted { font-family: var(--font-sans); color: var(--text-dim); text-align: center; }
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; padding: 48px 24px; color: var(--text-dim); }
 
-.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
-.admin-card { background: var(--s1); border: 1px solid var(--border); border-radius: 10px; padding: 18px; transition: border-color .15s; color: var(--purple); }
-.admin-card:hover { border-color: var(--purple); }
-.admin-card h3 { font-size: 14px; margin-top: 10px; color: var(--text); }
-.admin-card p { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* ---------- tab 3: live ---------- */
+.live-status-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; margin-bottom: 16px; }
+.live-status-row .status-dot { width: 10px; height: 10px; }
+.live-status-row .sep { color: var(--text-dim); }
+.live-status-row .updated { color: var(--text-dim); font-size: 12.5px; }
+.live-actions-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+.backfill-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+.log-panel {
+  background: var(--raise); border: 1px solid var(--border-strong); border-radius: 9px;
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;
+  max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+}
+.log-line { color: var(--text-dim); }
+.log-line.log-ok { color: var(--cyan); }
+.log-line.log-warn { color: var(--amber); }
+.log-line.log-err { color: var(--coral); }
+table.scenes-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.scenes-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+table.scenes-table td { padding: 9px 6px; border-bottom: 1px solid var(--border); }
 
-.footer { border-top: 1px solid var(--border); margin-top: 64px; padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+/* ---------- toasts ---------- */
+.toast-stack { position: fixed; bottom: 22px; right: 22px; z-index: 100; display: flex; flex-direction: column; gap: 10px; max-width: 340px; }
+.toast {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 12px 14px; border-radius: 10px; background: var(--panel);
+  border: 1px solid var(--border-strong); box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  font-size: 13px; cursor: pointer;
+  opacity: 0; transform: translateX(24px); transition: opacity .22s, transform .22s;
+}
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast-success { border-color: rgba(53,208,192,0.4); }
+.toast-success svg { color: var(--cyan); }
+.toast-error { border-color: rgba(239,100,97,0.4); }
+.toast-error svg { color: var(--coral); }
+.toast-info svg { color: var(--text-dim); }
+.toast svg { flex-shrink: 0; margin-top: 1px; }
 
-@media (max-width: 700px) {
-  .stat-row { grid-template-columns: 1fr 1fr; }
-  .rail-track { overflow-x: auto; }
-  .nav { display: none; }
+/* ---------- responsive ---------- */
+@media (max-width: 1199px) {
+  .split-6040 { grid-template-columns: 1fr; }
+  .field-row, .adv-fields { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 899px) {
+  main.page { padding: 20px 16px 64px; }
+  .region-cards { grid-template-columns: repeat(2, 1fr); }
+  .stats-row { grid-template-columns: 1fr 1fr; }
+  .backfill-form { grid-template-columns: 1fr 1fr; }
+  .backfill-form .btn { grid-column: 1 / -1; }
+  body { font-size: 13.5px; }
+}
+@media (max-width: 599px) {
+  .topnav { padding: 12px 14px; flex-wrap: wrap; gap: 10px; }
+  .tabs { order: 3; width: 100%; justify-content: stretch; }
+  .tab-btn { flex: 1; justify-content: center; padding: 10px 8px; }
+  .nav-status-updated { display: none; }
+  .field-row, .adv-fields { grid-template-columns: 1fr; }
+  .region-cards { grid-template-columns: 1fr 1fr; }
+  .card-header { flex-wrap: wrap; }
+  .card-actions .btn, .card-actions a.btn { flex: 1 1 auto; }
+  .stats-row { grid-template-columns: 1fr 1fr; }
+  .btn { min-height: 44px; }
+  .toast-stack { left: 14px; right: 14px; max-width: none; bottom: 14px; }
 }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div class="brand" id="brand-icon"></div>
-  <nav class="nav" id="main-nav"></nav>
-  <div id="api-status" class="pill err"><span class="dot"></span><span>Offline</span></div>
-</div>
+<header class="topnav">
+  <div class="brand" id="brandLogo"></div>
+  <nav class="tabs" id="tabNav">
+    <button type="button" class="tab-btn active" data-tab="create">Buat Dataset</button>
+    <button type="button" class="tab-btn" data-tab="datasets">Dataset Saya</button>
+    <button type="button" class="tab-btn" data-tab="live">Live</button>
+  </nav>
+  <div class="nav-status">
+    <span class="status-dot offline" id="navStatusDot"></span>
+    <span id="navStatusLabel">Offline</span>
+    <span class="nav-status-updated" id="navStatusUpdated">–</span>
+  </div>
+</header>
 
-<div class="page">
+<main class="page">
 
-  <section class="hero">
-    <div class="hero-badge" id="hero-badge"></div>
-    <h1>Pemantauan banjir Jabodetabek dari radar satelit Sentinel-1</h1>
-    <p>Citra SAR diproses otomatis, dikalibrasi, dipotong ke area Jabodetabek, direduksi noise, lalu divalidasi kualitasnya, dan siap diunduh untuk analisis atau model prediksi banjir.</p>
+  <section id="tab-create" class="tab-panel active">
+    <div class="split-6040">
+      <div>
+        <div class="panel">
+          <form id="createForm">
 
-    <div class="stat-row">
-      <div class="stat green"><div class="stat-val" id="s-scenes">-</div><div class="stat-label">Total scene diproses</div></div>
-      <div class="stat blue"><div class="stat-val" id="s-gold">-</div><div class="stat-label">Citra siap pakai</div></div>
-      <div class="stat green"><div class="stat-val" id="s-pass">-</div><div class="stat-label">Lolos cek kualitas</div></div>
-      <div class="stat amber"><div class="stat-val" id="s-updated">-</div><div class="stat-label">Terakhir diperbarui</div></div>
-    </div>
-  </section>
+            <div class="field-group">
+              <div class="section-label" id="labelLokasi"></div>
+              <div class="region-cards" id="regionCards"></div>
+              <input type="text" class="text-input" id="fLocation" placeholder="Ketik lokasi lain...">
+              <div style="margin-top:12px">
+                <div class="map-box" id="mapBox"><div id="mapContainer"></div></div>
+                <div class="map-fallback" id="mapFallback"></div>
+              </div>
+            </div>
 
-  <section class="section">
-    <div class="section-head">
-      <div class="section-title" id="rail-title"></div>
-      <div class="section-sub" id="rail-sub">memeriksa</div>
-    </div>
-    <div class="rail-card">
-      <div class="rail-meta">
-        <div class="scene-id" id="rail-scene-info">-</div>
-        <button class="btn btn-primary" id="trigger-btn" onclick="triggerPipeline()"></button>
+            <div class="field-group">
+              <div class="section-label" id="labelTanggal"></div>
+              <div class="field-row">
+                <div>
+                  <span class="field-sub-label">Mulai</span>
+                  <input type="date" class="date-input text-input" id="fDateStart">
+                </div>
+                <div>
+                  <span class="field-sub-label">Akhir</span>
+                  <input type="date" class="date-input text-input" id="fDateEnd">
+                </div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <details class="adv-settings">
+                <summary><span id="chevronAdv"></span><span>Pengaturan Lanjutan</span></summary>
+                <div class="adv-fields">
+                  <div>
+                    <span class="field-sub-label">Maks. tutupan awan (%)</span>
+                    <input type="number" min="0" max="100" class="text-input" id="fCloud" placeholder="20">
+                  </div>
+                  <div>
+                    <span class="field-sub-label">Skor kualitas minimum</span>
+                    <input type="number" min="0" max="100" class="text-input" id="fQuality" placeholder="60">
+                  </div>
+                  <div>
+                    <span class="field-sub-label">Resolusi (m)</span>
+                    <input type="number" min="1" class="text-input" id="fResolution" placeholder="10">
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="field-group">
+              <div class="section-label" id="labelTier"></div>
+              <div class="tier-pills" id="tierPills">
+                <label class="tier-pill" data-tier="RAW"><input type="checkbox" id="tier-RAW" value="RAW"><span class="dot"></span><span>RAW</span></label>
+                <label class="tier-pill" data-tier="BRONZE"><input type="checkbox" id="tier-BRONZE" value="BRONZE"><span class="dot"></span><span>BRONZE</span></label>
+                <label class="tier-pill" data-tier="SILVER"><input type="checkbox" id="tier-SILVER" value="SILVER"><span class="dot"></span><span>SILVER</span></label>
+                <label class="tier-pill" data-tier="GOLD"><input type="checkbox" id="tier-GOLD" value="GOLD"><span class="dot"></span><span>GOLD</span></label>
+                <label class="tier-pill tier-all" data-tier="ALL"><input type="checkbox" id="tier-ALL"><span>Semua</span></label>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <div class="section-label" id="labelMetadata"></div>
+              <div style="margin-bottom:14px">
+                <span class="field-sub-label">Nama dataset<span class="required-mark">*</span></span>
+                <input type="text" class="text-input" id="fName" placeholder="mis. dataset nov ke feb">
+              </div>
+              <div>
+                <span class="field-sub-label">Deskripsi</span>
+                <textarea class="text-input" id="fDesc" placeholder="Opsional"></textarea>
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block" id="btnCreate"></button>
+          </form>
+        </div>
       </div>
-      <div id="rail-track-wrap">
-        <div class="rail-idle">Memuat status pipeline</div>
+
+      <div>
+        <div class="panel">
+          <div class="ring-wrap" id="tierRingWrap"></div>
+          <div class="tier-badge-list" id="tierBadgeList"></div>
+          <p class="hint-text">Setelah dataset dibuat, unduhan dijalankan sambil scene sebelumnya diproses. Tier yang tidak dipilih otomatis dihapus dari penyimpanan setelah tiap scene selesai.</p>
+        </div>
       </div>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-head">
-      <div class="section-title" id="gallery-title"></div>
-      <div class="section-sub">Band <span id="band-label">VV</span></div>
+  <section id="tab-datasets" class="tab-panel">
+    <div class="topbar">
+      <h2>Dataset Saya</h2>
+      <button type="button" class="btn btn-ghost" id="btnRefreshDatasets"></button>
     </div>
-    <div class="gallery" id="gallery">
-      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
-      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
-      <div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-body"><div class="skeleton sk-line" style="width:60%"></div><div class="skeleton sk-line" style="width:40%"></div></div></div>
+    <div class="dataset-list" id="datasetList"></div>
+  </section>
+
+  <section id="tab-live" class="tab-panel">
+    <div class="split-6040">
+      <div>
+        <div class="panel">
+          <div class="live-status-row">
+            <span class="status-dot offline" id="liveStatusDot"></span>
+            <span id="liveStatusLabel">Offline</span>
+            <span class="sep">·</span>
+            <span class="updated" id="liveLastUpdate">Last update: –</span>
+          </div>
+          <div class="live-actions-row">
+            <button type="button" class="btn btn-cyan" id="btnLiveToggle"></button>
+            <button type="button" class="btn btn-ghost" id="btnTriggerPipeline"></button>
+          </div>
+
+          <div class="section-label" id="labelBackfill"></div>
+          <form class="backfill-form" id="backfillForm">
+            <div>
+              <span class="field-sub-label">Tanggal mulai</span>
+              <input type="date" class="date-input text-input" id="bfStart">
+            </div>
+            <div>
+              <span class="field-sub-label">Tanggal akhir</span>
+              <input type="date" class="date-input text-input" id="bfEnd">
+            </div>
+            <button type="submit" class="btn btn-primary" id="btnBackfill">Mulai Backfill</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="section-label" id="labelLog"></div>
+          <div class="log-panel" id="liveLogPanel"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div class="section-label" id="labelSceneTerbaru"></div>
+          <div style="overflow-x:auto">
+            <table class="scenes-table">
+              <thead><tr><th>Tanggal</th><th>Tier</th><th>Ukuran</th></tr></thead>
+              <tbody id="recentScenesBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
-  <section class="section">
-    <div class="section-head">
-      <div class="section-title" id="admin-title"></div>
-      <div class="section-sub">Bukan untuk pengguna umum</div>
-    </div>
-    <div class="admin-grid" id="admin-grid"></div>
-  </section>
+</main>
 
-</div>
-
-<div class="footer">Sentinel Sentinel - Sistem Informasi, Universitas Multimedia Nusantara</div>
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
 <script src="/icons.js"></script>
 <script>
 const API = window.location.origin;
-const STAGE_LABELS = {
-  DOWNLOAD: "Download",
-  CROP: "Kalibrasi + Crop",
-  LEE_FILTER: "Lee Filter",
-  COG_EXPORT: "COG Export",
-  QUALITY_ANALYTICS: "Quality Check",
-};
-const STAGE_ORDER = ["DOWNLOAD", "CROP", "LEE_FILTER", "COG_EXPORT", "QUALITY_ANALYTICS"];
+
+const REGIONS = [
+  { name: "Jabodetabek", area: "6.392 km²", bounds: [[-6.7, 106.4], [-5.9, 107.2]] },
+  { name: "DKI Jakarta", area: "661,5 km²", bounds: [[-6.37, 106.68], [-6.09, 106.97]] },
+  { name: "Jakarta Utara", area: "146,66 km²", bounds: [[-6.20, 106.70], [-6.07, 106.95]] },
+];
+
+const TIERS = ["RAW", "BRONZE", "SILVER", "GOLD"];
+const TIER_VAR = { RAW: "var(--violet)", BRONZE: "var(--bronze)", SILVER: "var(--silver)", GOLD: "var(--cyan)" };
+const TIER_RADIUS = { RAW: 95, BRONZE: 72, SILVER: 49, GOLD: 26 };
+const ACTIVE_STATUSES = ["QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING"];
+
+let map = null, bboxLayer = null, mapAvailable = false;
+let activeTab = "create";
+let datasetsPollTimer = null;
+let livePollTimer = null;
+let liveEnabled = false;
+let lastHealthAt = null;
+const expandedDatasets = new Set();
+
+/* ---------------- chrome ---------------- */
 
 function buildChrome() {
-  document.getElementById("brand-icon").innerHTML = Icons.svg("satellite", 18) + "<span>Sentinel Sentinel</span>";
-  document.getElementById("main-nav").innerHTML = `
-    <a href="/" class="current">${Icons.svg("pulse", 14)}<span>Beranda</span></a>
-    <a href="/Sentinel1Dashboard.html">${Icons.svg("grid", 14)}<span>Monitor</span></a>
-    <a href="/pipeline_config_ui.html">${Icons.svg("sliders", 14)}<span>Konfigurasi</span><span class="tag">admin</span></a>
-    <a href="/Storage_Manager.html">${Icons.svg("database", 14)}<span>Storage</span><span class="tag">admin</span></a>
-  `;
-  document.getElementById("hero-badge").innerHTML = Icons.svg("droplet", 14) + "<span>Data siap pakai untuk mitigasi banjir</span>";
-  document.getElementById("rail-title").innerHTML = Icons.svg("pulse", 16) + "<span>Status pemrosesan</span>";
-  document.getElementById("gallery-title").innerHTML = Icons.svg("image", 16) + "<span>Citra terbaru</span>";
-  document.getElementById("admin-title").innerHTML = Icons.svg("sliders", 16) + "<span>Perangkat admin</span>";
-  document.getElementById("trigger-btn").innerHTML = Icons.svg("play", 14) + "<span>Jalankan sekarang</span>";
-  document.getElementById("admin-grid").innerHTML = `
-    <a class="admin-card" href="/Sentinel1Dashboard.html">
-      ${Icons.svg("grid", 22)}
-      <h3>Monitor lengkap</h3>
-      <p>Galeri penuh, status scheduler, dan log pipeline</p>
-    </a>
-    <a class="admin-card" href="/pipeline_config_ui.html">
-      ${Icons.svg("sliders", 22)}
-      <h3>Konfigurasi pipeline</h3>
-      <p>Atur wilayah, rentang waktu, dan parameter pemrosesan</p>
-    </a>
-    <a class="admin-card" href="/Storage_Manager.html">
-      ${Icons.svg("database", 22)}
-      <h3>Kelola storage</h3>
-      <p>Lihat dan bersihkan penyimpanan per tahap</p>
-    </a>
-  `;
+  document.getElementById("brandLogo").innerHTML = Icons.svg("satellite", 20) + "<span>Sentinel Sentinel</span>";
+  document.getElementById("labelLokasi").innerHTML = Icons.svg("map", 14) + "<span>Lokasi</span>";
+  document.getElementById("labelTanggal").innerHTML = Icons.svg("calendar", 14) + "<span>Tanggal</span>";
+  document.getElementById("labelTier").innerHTML = Icons.svg("layers", 14) + "<span>Tier Pilihan</span>";
+  document.getElementById("labelMetadata").innerHTML = Icons.svg("info", 14) + "<span>Metadata</span>";
+  document.getElementById("chevronAdv").innerHTML = Icons.svg("chevron", 14);
+  document.getElementById("chevronAdv").className = "chevron";
+  document.getElementById("btnCreate").innerHTML = Icons.svg("play", 15) + "<span>Buat Dataset</span>";
+  document.getElementById("btnRefreshDatasets").innerHTML = Icons.svg("refresh", 14) + "<span>Segarkan</span>";
+  document.getElementById("btnTriggerPipeline").innerHTML = Icons.svg("play", 14) + "<span>Jalankan pipeline sekarang</span>";
+  document.getElementById("labelBackfill").innerHTML = Icons.svg("clock", 14) + "<span>Isi Data Lampau (Backfill)</span>";
+  document.getElementById("labelLog").innerHTML = Icons.svg("pulse", 14) + "<span>Log Aktivitas</span>";
+  document.getElementById("labelSceneTerbaru").innerHTML = Icons.svg("image", 14) + "<span>Scene Terbaru</span>";
+  document.getElementById("mapFallback").innerHTML = Icons.svg("map", 22) + "<span>Peta tidak tersedia</span>";
+  renderLiveToggleButton();
 }
 
-async function checkApi() {
-  const el = document.getElementById("api-status");
-  try {
-    const r = await fetch(API + "/api/health", { signal: AbortSignal.timeout(3000) });
-    const d = await r.json();
-    el.className = d.db_connected ? "pill ok" : "pill err";
-    el.innerHTML = `<span class="dot"></span><span>${d.db_connected ? "Online" : "DB Error"}</span>`;
-  } catch (e) {
-    el.className = "pill err";
-    el.innerHTML = '<span class="dot"></span><span>Offline</span>';
+function icon(name, size) { return Icons.svg(name, size || 14); }
+
+/* ---------------- tabs ---------------- */
+
+function switchTab(name) {
+  activeTab = name;
+  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
+
+  if (datasetsPollTimer) { clearInterval(datasetsPollTimer); datasetsPollTimer = null; }
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+
+  if (name === "datasets") {
+    loadDatasets();
+    datasetsPollTimer = setInterval(loadDatasets, 5000);
+  } else if (name === "live") {
+    loadLive();
+    loadRecentScenes();
+    livePollTimer = setInterval(() => { loadLive(); loadRecentScenes(); }, 5000);
   }
 }
 
-async function loadStats() {
-  try {
-    const [sc, pr, ql] = await Promise.allSettled([
-      fetch(API + "/api/scenes?limit=1").then((r) => r.json()),
-      fetch(API + "/api/products?tier=GOLD&limit=1").then((r) => r.json()),
-      fetch(API + "/api/quality/summary/stats?n_days=365").then((r) => r.json()),
-    ]);
-    if (sc.status === "fulfilled") set("s-scenes", sc.value.total ?? "-");
-    if (pr.status === "fulfilled") set("s-gold", pr.value.total ?? "-");
-    if (ql.status === "fulfilled") {
-      const f = ql.value.flags || {};
-      set("s-pass", f.PASS?.count ?? 0);
-    }
-    set("s-updated", new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }));
-  } catch (e) {}
-}
-
-async function loadRail() {
-  try {
-    const r = await fetch(API + "/api/pipeline/status/current", { signal: AbortSignal.timeout(4000) });
-    const d = await r.json();
-    renderRail(d);
-  } catch (e) {
-    document.getElementById("rail-track-wrap").innerHTML =
-      '<div class="rail-idle">Tidak bisa menghubungi API status pipeline</div>';
-  }
-}
-
-function renderRail(d) {
-  const wrap = document.getElementById("rail-track-wrap");
-  const sub = document.getElementById("rail-sub");
-  const info = document.getElementById("rail-scene-info");
-
-  if (!d.stages || d.stages.length === 0) {
-    sub.textContent = "belum ada proses";
-    info.textContent = "Belum ada scene yang diproses";
-    wrap.innerHTML = `<div class="rail-idle">${Icons.svg("satellite", 28)}<span>Belum ada proses berjalan. Tekan Jalankan sekarang untuk memulai siklus pipeline.</span></div>`;
-    return;
-  }
-
-  const byStage = {};
-  d.stages.forEach((s) => { byStage[s.stage_name] = s.status; });
-
-  sub.textContent = d.active ? "sedang berjalan" : d.overall_status === "COMPLETE" ? "selesai" : d.overall_status.toLowerCase();
-  info.innerHTML = `Scene <strong>${d.product_identifier || d.scene_id || "-"}</strong>`;
-
-  let html = '<div class="rail-track">';
-  STAGE_ORDER.forEach((stage, i) => {
-    const status = byStage[stage];
-    let cls = "";
-    if (status === "SUCCESS") cls = "done";
-    else if (status === "RUNNING" || status === "QUEUED") cls = "active";
-    else if (status === "FAILED") cls = "failed";
-    html += `<div class="rail-node ${cls}"><div class="rail-dot"></div><div class="rail-label">${STAGE_LABELS[stage]}</div></div>`;
-    if (i < STAGE_ORDER.length - 1) {
-      html += `<div class="rail-line ${cls === "done" ? "done" : ""}"></div>`;
-    }
+function wireTabButtons() {
+  document.getElementById("tabNav").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (btn) switchTab(btn.dataset.tab);
   });
-  html += "</div>";
-  wrap.innerHTML = html;
 }
 
-async function triggerPipeline() {
-  const btn = document.getElementById("trigger-btn");
-  btn.disabled = true;
-  btn.innerHTML = Icons.svg("refresh", 14) + "<span>Memulai</span>";
+/* ---------------- tier ring ---------------- */
+
+function tierRingSVG(size, checkedSet) {
+  const c = size / 2;
+  const scale = size / 220;
+  const circles = TIERS.map((t) => {
+    const r = TIER_RADIUS[t] * scale;
+    const opacity = checkedSet.has(t) ? "1" : "0.15";
+    return `<circle class="tier-circle" data-tier="${t}" cx="${c}" cy="${c}" r="${r}" fill="${TIER_VAR[t]}" fill-opacity="${opacity}"/>`;
+  }).join("");
+  return `<svg class="mini-ring" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">${circles}</svg>`;
+}
+
+function currentCheckedTiers() {
+  return TIERS.filter((t) => document.getElementById("tier-" + t).checked);
+}
+
+function buildCreateRingOnce() {
+  document.getElementById("tierRingWrap").innerHTML = tierRingSVG(200, new Set());
+}
+
+function renderCreateRing() {
+  const checked = currentCheckedTiers();
+  const checkedSet = new Set(checked);
+  document.querySelectorAll("#tierRingWrap .tier-circle").forEach((c) => {
+    c.setAttribute("fill-opacity", checkedSet.has(c.dataset.tier) ? "1" : "0.15");
+  });
+  const listEl = document.getElementById("tierBadgeList");
+  listEl.innerHTML = checked.length === 0
+    ? '<span class="badge muted-badge">Belum ada tier dipilih</span>'
+    : checked.map((t) => `<span class="badge tier-${t.toLowerCase()}">${t}</span>`).join("");
+}
+
+function refreshTierUI() {
+  const boxes = TIERS.map((t) => document.getElementById("tier-" + t));
+  const allBox = document.getElementById("tier-ALL");
+  const checked = boxes.filter((b) => b.checked);
+  allBox.checked = checked.length === boxes.length;
+  document.querySelectorAll(".tier-pill").forEach((pill) => {
+    pill.classList.toggle("checked", pill.querySelector("input").checked);
+  });
+  renderCreateRing();
+}
+
+function wireTierCheckboxes() {
+  const boxes = TIERS.map((t) => document.getElementById("tier-" + t));
+  const allBox = document.getElementById("tier-ALL");
+
+  boxes.forEach((b) => b.addEventListener("change", () => { refreshTierUI(); saveFormState(); }));
+  allBox.addEventListener("change", () => {
+    boxes.forEach((b) => { b.checked = allBox.checked; });
+    refreshTierUI();
+    saveFormState();
+  });
+
+  refreshTierUI();
+}
+
+/* ---------------- region cards + map ---------------- */
+
+function buildRegionCards() {
+  const wrap = document.getElementById("regionCards");
+  wrap.innerHTML = REGIONS.map((r, i) => `
+    <button type="button" class="region-card" data-idx="${i}">
+      <span class="region-check">${icon("check", 14)}</span>
+      <span class="region-name">${escapeHtml(r.name)}</span>
+      <span class="region-area">${escapeHtml(r.area)}</span>
+    </button>`).join("");
+  wrap.querySelectorAll(".region-card").forEach((btn) => {
+    btn.addEventListener("click", () => selectRegion(REGIONS[Number(btn.dataset.idx)]));
+  });
+}
+
+function highlightRegionCard(region) {
+  const idx = REGIONS.indexOf(region);
+  document.querySelectorAll(".region-card").forEach((c) => {
+    c.classList.toggle("selected", Number(c.dataset.idx) === idx);
+  });
+}
+
+function clearRegionSelection() {
+  document.querySelectorAll(".region-card").forEach((c) => c.classList.remove("selected"));
+}
+
+function selectRegion(region) {
+  highlightRegionCard(region);
+  document.getElementById("fLocation").value = region.name;
+  showMapBounds(region.bounds);
+  saveFormState();
+}
+
+function initMap() {
   try {
-    const r = await fetch(API + "/api/pipeline/trigger", { method: "POST", signal: AbortSignal.timeout(5000) });
-    const d = await r.json();
-    btn.innerHTML = Icons.svg(d.started ? "play" : "clock", 14) + `<span>${d.started ? "Berjalan" : "Sudah berjalan"}</span>`;
+    if (typeof L === "undefined") throw new Error("Leaflet tidak termuat");
+    map = L.map("mapContainer", { zoomControl: false, attributionControl: false }).setView([-6.2, 106.83], 9);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      subdomains: "abcd", maxZoom: 19,
+    }).addTo(map);
+    mapAvailable = true;
+    document.getElementById("mapBox").style.display = "none";
   } catch (e) {
-    btn.innerHTML = Icons.svg("alert", 14) + "<span>Gagal memicu</span>";
+    mapAvailable = false;
+    document.getElementById("mapBox").style.display = "none";
+    document.getElementById("mapFallback").style.display = "flex";
   }
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.innerHTML = Icons.svg("play", 14) + "<span>Jalankan sekarang</span>";
-  }, 4000);
 }
 
-let currentBand = "VV";
+function showMapBounds(bounds) {
+  if (!mapAvailable || !map) return;
+  document.getElementById("mapBox").style.display = "block";
+  document.getElementById("mapFallback").style.display = "none";
+  setTimeout(() => map.invalidateSize(), 60);
+  if (bboxLayer) map.removeLayer(bboxLayer);
+  bboxLayer = L.rectangle(bounds, { color: "#35D0C0", weight: 2, fillOpacity: 0.08 }).addTo(map);
+  map.fitBounds(bounds, { padding: [16, 16] });
+}
 
-async function loadGallery() {
-  const gallery = document.getElementById("gallery");
-  try {
-    const r = await fetch(`${API}/api/preview/latest?limit=6&band=${currentBand}`, { signal: AbortSignal.timeout(5000) });
-    if (!r.ok) throw new Error("status " + r.status);
-    const d = await r.json();
+function hideMap() {
+  if (bboxLayer && map) { map.removeLayer(bboxLayer); bboxLayer = null; }
+  document.getElementById("mapBox").style.display = "none";
+  if (mapAvailable) document.getElementById("mapFallback").style.display = "none";
+}
 
-    if (!d.items || d.items.length === 0) {
-      gallery.innerHTML = `<div class="no-data">${Icons.svg("satellite", 28)}<span>Belum ada citra siap pakai. Jalankan pipeline untuk memproses citra pertama.</span></div>`;
+function wireLocationInput() {
+  document.getElementById("fLocation").addEventListener("input", (e) => {
+    const val = e.target.value.trim();
+    if (!val) {
+      clearRegionSelection();
+      hideMap();
+      saveFormState();
+      return;
+    }
+    const match = REGIONS.find((r) => r.name.toLowerCase() === val.toLowerCase());
+    if (match) {
+      highlightRegionCard(match);
+      showMapBounds(match.bounds);
+    } else {
+      clearRegionSelection();
+      hideMap();
+    }
+    saveFormState();
+  });
+}
+
+/* ---------------- create form ---------------- */
+
+function resetCreateForm() {
+  document.getElementById("createForm").reset();
+  clearRegionSelection();
+  hideMap();
+  renderCreateRing();
+  document.querySelectorAll(".tier-pill").forEach((p) => p.classList.remove("checked"));
+}
+
+function wireCreateForm() {
+  ["fLocation", "fDateStart", "fDateEnd", "fName", "fDesc", "fCloud", "fQuality", "fResolution"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", saveFormState);
+  });
+
+  document.getElementById("createForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const location = document.getElementById("fLocation").value.trim();
+    const dateStart = document.getElementById("fDateStart").value;
+    const dateEnd = document.getElementById("fDateEnd").value;
+    const name = document.getElementById("fName").value.trim();
+    const desc = document.getElementById("fDesc").value.trim();
+    const tiers = currentCheckedTiers();
+
+    if (!location || !dateStart || !dateEnd || !name) {
+      showToast("error", "Lengkapi lokasi, tanggal, dan nama dataset");
+      return;
+    }
+    if (dateEnd < dateStart) {
+      showToast("error", "Tanggal akhir harus setelah tanggal mulai");
+      return;
+    }
+    if (tiers.length === 0) {
+      showToast("error", "Pilih minimal satu tier data");
       return;
     }
 
-    gallery.innerHTML = d.items.slice(0, 6).map((item) => {
-      const dt = item.acquisition_datetime
-        ? new Date(item.acquisition_datetime).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })
-        : "-";
-      const flag = item.quality_flag || "UNCHECKED";
-      const tagClass = flag === "PASS" ? "pass" : flag === "FAIL" ? "fail" : flag === "WARNING" ? "warn" : "";
-      const tagIcon = flag === "PASS" ? "check" : flag === "FAIL" ? "x" : "alert";
-      const score = item.quality_score !== null && item.quality_score !== undefined ? item.quality_score.toFixed(1) : "";
-      const thumbSrc = item.file_exists_on_disk ? `${API}${item.thumbnail_url}&width=500` : "";
-      return `
-        <div class="img-card">
-          <img src="${thumbSrc}" alt="Citra Sentinel-1 ${item.band_name} ${dt}" loading="lazy"
-               onerror="this.style.background='#1a1a1a'; this.removeAttribute('src')">
-          <div class="img-body">
-            <div class="img-date">${dt}</div>
-            <div class="img-sub">Scene #${item.scene_id} - ${(item.file_size_mb || 0).toFixed(1)} MB</div>
-            <div class="img-tags">
-              <span class="tag band">${item.band_name}</span>
-              ${tagClass ? `<span class="tag ${tagClass}">${Icons.svg(tagIcon, 11)}${flag}${score ? " " + score : ""}</span>` : ""}
-            </div>
-            <a class="btn btn-ghost img-download" href="${API}/api/products/${item.product_id}/download">${Icons.svg("download", 14)}<span>Unduh</span></a>
-          </div>
-        </div>`;
-    }).join("");
+    const qs = {};
+    const cloud = document.getElementById("fCloud").value;
+    const quality = document.getElementById("fQuality").value;
+    const resolution = document.getElementById("fResolution").value;
+    if (cloud !== "") qs.min_cloud_cover = Number(cloud);
+    if (quality !== "") qs.min_quality_score = Number(quality);
+    if (resolution !== "") qs.resolution_m = Number(resolution);
+
+    const btn = document.getElementById("btnCreate");
+    btn.disabled = true;
+    btn.innerHTML = icon("refresh", 15) + "<span>Membuat...</span>";
+
+    try {
+      const res = await fetch(`${API}/api/datasets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location, date_start: dateStart, date_end: dateEnd,
+          tiers, name, description: desc || null,
+          quality_settings: Object.keys(qs).length ? qs : null,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `Permintaan gagal (${res.status})` }));
+        throw new Error(err.detail || `Permintaan gagal (${res.status})`);
+      }
+      const data = await res.json();
+      showToast("success", `Dataset dibuat (status: ${data.status})`);
+      clearFormState();
+      resetCreateForm();
+      switchTab("datasets");
+    } catch (err) {
+      showToast("error", err.message || "Tidak bisa menghubungi server");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = icon("play", 15) + "<span>Buat Dataset</span>";
+    }
+  });
+}
+
+/* ---------------- form state (localStorage) ---------------- */
+
+const FORM_KEY = "sentinel_create_form_v1";
+
+function saveFormState() {
+  try {
+    const state = {
+      location: document.getElementById("fLocation").value,
+      dateStart: document.getElementById("fDateStart").value,
+      dateEnd: document.getElementById("fDateEnd").value,
+      name: document.getElementById("fName").value,
+      desc: document.getElementById("fDesc").value,
+      cloud: document.getElementById("fCloud").value,
+      quality: document.getElementById("fQuality").value,
+      resolution: document.getElementById("fResolution").value,
+      tiers: currentCheckedTiers(),
+    };
+    localStorage.setItem(FORM_KEY, JSON.stringify(state));
+  } catch (e) {}
+}
+
+function restoreFormState() {
+  try {
+    const raw = localStorage.getItem(FORM_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.location) document.getElementById("fLocation").value = s.location;
+    if (s.dateStart) document.getElementById("fDateStart").value = s.dateStart;
+    if (s.dateEnd) document.getElementById("fDateEnd").value = s.dateEnd;
+    if (s.name) document.getElementById("fName").value = s.name;
+    if (s.desc) document.getElementById("fDesc").value = s.desc;
+    if (s.cloud) document.getElementById("fCloud").value = s.cloud;
+    if (s.quality) document.getElementById("fQuality").value = s.quality;
+    if (s.resolution) document.getElementById("fResolution").value = s.resolution;
+    (s.tiers || []).forEach((t) => {
+      const el = document.getElementById("tier-" + t);
+      if (el) el.checked = true;
+    });
+    refreshTierUI();
+    const match = REGIONS.find((r) => r.name === s.location);
+    if (match) selectRegion(match);
+  } catch (e) {}
+}
+
+function clearFormState() {
+  try { localStorage.removeItem(FORM_KEY); } catch (e) {}
+}
+
+/* ---------------- tab 2: dataset saya ---------------- */
+
+function badgeClassForStatus(st) {
+  if (st === "COMPLETED") return "status-completed";
+  if (st === "PAUSED") return "status-paused";
+  if (st === "FAILED") return "status-failed";
+  return "status-processing";
+}
+
+async function fetchDatasetExtra(id) {
+  const [detailRes, statusRes] = await Promise.allSettled([
+    fetch(`${API}/api/datasets/${id}`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)),
+    fetch(`${API}/api/datasets/${id}/status`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)),
+  ]);
+  return {
+    detail: detailRes.status === "fulfilled" ? detailRes.value : null,
+    status: statusRes.status === "fulfilled" ? statusRes.value : null,
+  };
+}
+
+async function loadDatasets() {
+  const listEl = document.getElementById("datasetList");
+  try {
+    const res = await fetch(`${API}/api/datasets?limit=50`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error("status " + res.status);
+    const data = await res.json();
+
+    if (!data.items || data.items.length === 0) {
+      listEl.innerHTML = `<div class="panel empty-state">${icon("satellite", 28)}<span>Belum ada dataset. Buat dataset pertama di tab "Buat Dataset".</span></div>`;
+      return;
+    }
+
+    const extras = await Promise.all(data.items.map((d) => fetchDatasetExtra(d.id)));
+    listEl.innerHTML = data.items.map((item, i) => datasetCardHTML(item, extras[i])).join("");
   } catch (e) {
-    gallery.innerHTML = `<div class="no-data">${Icons.svg("alert", 28)}<span>Gagal memuat citra terbaru</span></div>`;
+    listEl.innerHTML = `<div class="panel empty-state">${icon("alert", 28)}<span>Gagal memuat dataset</span></div>`;
   }
 }
 
-function set(id, val) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = val;
+function datasetCardHTML(item, extra) {
+  const detail = extra.detail || {};
+  const status = extra.status || {};
+  const st = status.status || detail.status || item.status;
+  const tiers = Array.isArray(detail.required_tiers) ? detail.required_tiers : [];
+  const total = status.total_scenes ?? 0;
+  const completed = status.completed ?? 0;
+  const failed = status.failed ?? 0;
+  const sizeBytes = status.total_size_bytes ?? detail.total_size_bytes ?? null;
+  const sizeLabel = sizeBytes != null ? humanBytes(sizeBytes) : "–";
+  const dateRange = detail.date_start && detail.date_end ? `${detail.date_start} – ${detail.date_end}` : "";
+  const badgeClass = badgeClassForStatus(st);
+  const canPause = ACTIVE_STATUSES.includes(st);
+  const canResume = st === "PAUSED";
+  const expanded = expandedDatasets.has(item.id);
+
+  return `
+    <div class="dataset-card" data-id="${item.id}">
+      <div class="card-header">
+        ${tierRingSVG(96, new Set(tiers))}
+        <div class="card-info">
+          <div class="card-title-row">
+            <span class="card-title">${escapeHtml(item.name)}</span>
+            <span class="badge ${badgeClass}">${escapeHtml(st)}</span>
+          </div>
+          <div class="card-meta">${escapeHtml(item.location)}${dateRange ? " • " + escapeHtml(dateRange) : ""}</div>
+          <div class="card-tiers">${tiers.map((t) => `<span class="badge tier-${String(t).toLowerCase()}">${escapeHtml(t)}</span>`).join("")}</div>
+        </div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-box"><div class="stat-val">${total}</div><div class="stat-label">scene</div></div>
+        <div class="stat-box"><div class="stat-val">${completed}</div><div class="stat-label">selesai</div></div>
+        <div class="stat-box"><div class="stat-val">${failed}</div><div class="stat-label">gagal</div></div>
+        <div class="stat-box"><div class="stat-val">${sizeLabel}</div><div class="stat-label">ukuran</div></div>
+      </div>
+      <div class="card-actions">
+        ${canPause ? `<button type="button" class="btn btn-amber" onclick="pauseDataset(${item.id})">${icon("pause", 14)}<span>Jeda</span></button>` : ""}
+        ${canResume ? `<button type="button" class="btn btn-cyan" onclick="resumeDataset(${item.id})">${icon("play", 14)}<span>Lanjutkan</span></button>` : ""}
+        <button type="button" class="btn btn-danger" onclick="deleteDataset(${item.id})">${icon("trash", 14)}<span>Hapus</span></button>
+        <a class="btn btn-ghost" href="${API}/api/datasets/${item.id}/download">${icon("download", 14)}<span>Unduh</span></a>
+        <button type="button" class="btn btn-ghost" onclick="toggleDetail(${item.id}, this)">${icon("chevron", 14)}<span>Detail</span></button>
+      </div>
+      <div class="scene-table-wrap" id="scenes-${item.id}" ${expanded ? "" : "hidden"}>
+        <table class="scene-table">
+          <thead><tr><th>Product ID</th><th>Stage</th><th>Status</th><th>Error</th></tr></thead>
+          <tbody><tr><td colspan="4" class="muted">Rincian per-scene belum tersedia dari API.</td></tr></tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
-async function refreshAll() {
-  await Promise.all([checkApi(), loadStats(), loadRail(), loadGallery()]);
+function toggleDetail(id, btn) {
+  const el = document.getElementById("scenes-" + id);
+  if (!el) return;
+  const next = el.hasAttribute("hidden");
+  if (next) { el.removeAttribute("hidden"); expandedDatasets.add(id); }
+  else { el.setAttribute("hidden", ""); expandedDatasets.delete(id); }
+  const chev = btn.querySelector("svg");
+  if (chev) chev.classList.toggle("rotated", next);
 }
 
-buildChrome();
-refreshAll();
-setInterval(checkApi, 15000);
-setInterval(loadRail, 8000);
-setInterval(() => { loadStats(); loadGallery(); }, 60000);
+async function pauseDataset(id) {
+  try {
+    const res = await fetch(`${API}/api/datasets/${id}/pause`, { method: "POST" });
+    if (!res.ok) throw new Error();
+    showToast("success", "Dataset dijeda");
+    loadDatasets();
+  } catch (e) {
+    showToast("error", "Gagal menjeda dataset");
+  }
+}
+
+async function resumeDataset(id) {
+  try {
+    const res = await fetch(`${API}/api/datasets/${id}/resume`, { method: "POST" });
+    if (!res.ok) throw new Error();
+    showToast("success", "Dataset dilanjutkan");
+    loadDatasets();
+  } catch (e) {
+    showToast("error", "Gagal melanjutkan dataset");
+  }
+}
+
+async function deleteDataset(id) {
+  if (!confirm("Hapus dataset ini? Semua file yang tersimpan akan dihapus total dan tidak bisa dikembalikan.")) return;
+  try {
+    const res = await fetch(`${API}/api/datasets/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error();
+    showToast("success", "Penghapusan dimulai");
+    expandedDatasets.delete(id);
+    loadDatasets();
+  } catch (e) {
+    showToast("error", "Gagal menghapus dataset");
+  }
+}
+
+function wireDatasetsTab() {
+  document.getElementById("btnRefreshDatasets").addEventListener("click", loadDatasets);
+}
+
+/* ---------------- tab 3: live ---------------- */
+
+function renderLiveToggleButton() {
+  const btn = document.getElementById("btnLiveToggle");
+  btn.innerHTML = liveEnabled
+    ? icon("pause", 14) + "<span>Nonaktifkan Live</span>"
+    : icon("play", 14) + "<span>Aktifkan Live</span>";
+}
+
+function renderLiveStatus(d) {
+  const dot = document.getElementById("liveStatusDot");
+  const label = document.getElementById("liveStatusLabel");
+  const updated = document.getElementById("liveLastUpdate");
+
+  if (!d) {
+    dot.className = "status-dot offline";
+    label.textContent = "Offline";
+    updated.textContent = "Last update: –";
+    return;
+  }
+  liveEnabled = !!d.enabled;
+  dot.className = "status-dot " + (liveEnabled ? "online" : "offline");
+  label.textContent = liveEnabled ? "Online" : "Offline";
+  updated.textContent = "Last update: " + relativeTime(d.last_check);
+  renderLiveToggleButton();
+}
+
+async function loadLive() {
+  try {
+    const res = await fetch(`${API}/api/live`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    renderLiveStatus(d);
+  } catch (e) {
+    renderLiveStatus(null);
+  }
+}
+
+async function toggleLive() {
+  const next = !liveEnabled;
+  const btn = document.getElementById("btnLiveToggle");
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/live/toggle?enabled=${next}`, { method: "POST" });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    liveEnabled = !!d.enabled;
+    addLiveLog(liveEnabled ? "ok" : "info", d.message || `Live mode ${liveEnabled ? "aktif" : "nonaktif"}`);
+    showToast("success", d.message || "Status live mode diperbarui");
+    loadLive();
+  } catch (e) {
+    addLiveLog("err", "Gagal mengubah status live mode");
+    showToast("error", "Gagal mengubah status live mode");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function triggerPipelineNow() {
+  const btn = document.getElementById("btnTriggerPipeline");
+  btn.disabled = true;
+  addLiveLog("info", "Mengirim trigger pipeline ke API");
+  try {
+    const res = await fetch(`${API}/api/pipeline/trigger`, { method: "POST", signal: AbortSignal.timeout(6000) });
+    const d = await res.json();
+    addLiveLog(d.started ? "ok" : "warn", d.message || (d.started ? "Pipeline dimulai" : "Pipeline sudah berjalan"));
+    showToast(d.started ? "success" : "info", d.message || "Pipeline dipicu");
+  } catch (e) {
+    addLiveLog("err", "Tidak bisa menghubungi API pipeline trigger");
+    showToast("error", "Tidak bisa menghubungi server");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function submitBackfill(e) {
+  e.preventDefault();
+  const start = document.getElementById("bfStart").value;
+  const end = document.getElementById("bfEnd").value;
+  if (!start || !end) { showToast("error", "Isi tanggal mulai dan akhir backfill"); return; }
+  if (end < start) { showToast("error", "Tanggal akhir harus setelah tanggal mulai"); return; }
+
+  const btn = document.getElementById("btnBackfill");
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/live/backfill?date_start=${encodeURIComponent(start)}&date_end=${encodeURIComponent(end)}`, {
+      method: "POST",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    showToast("success", `Backfill dimulai (job ${d.job_id})`);
+    addLiveLog("ok", `Backfill diminta: ${start} -> ${end}`);
+    document.getElementById("backfillForm").reset();
+  } catch (err) {
+    showToast("error", "Gagal memulai backfill");
+    addLiveLog("err", "Backfill gagal dikirim");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function addLiveLog(type, msg) {
+  const panel = document.getElementById("liveLogPanel");
+  const time = new Date().toLocaleTimeString("id-ID");
+  const line = document.createElement("div");
+  line.className = `log-line log-${type}`;
+  line.textContent = `[${time}] ${msg}`;
+  panel.appendChild(line);
+  while (panel.children.length > 10) panel.removeChild(panel.firstChild);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+async function loadRecentScenes() {
+  const tbody = document.getElementById("recentScenesBody");
+  try {
+    const res = await fetch(`${API}/api/products?limit=5`, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+    if (!d.items || d.items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3" class="muted">Belum ada scene</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = d.items.map((p) => `
+      <tr>
+        <td>${new Date(p.created_at).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}</td>
+        <td><span class="badge tier-${String(p.product_tier).toLowerCase()}">${escapeHtml(p.product_tier)}</span></td>
+        <td>${humanBytesMB(p.file_size_mb)}</td>
+      </tr>`).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3" class="muted">Gagal memuat scene terbaru</td></tr>`;
+  }
+}
+
+function wireLiveTab() {
+  document.getElementById("btnLiveToggle").addEventListener("click", toggleLive);
+  document.getElementById("btnTriggerPipeline").addEventListener("click", triggerPipelineNow);
+  document.getElementById("backfillForm").addEventListener("submit", submitBackfill);
+}
+
+/* ---------------- top nav health ---------------- */
+
+async function checkHealth() {
+  const dot = document.getElementById("navStatusDot");
+  const label = document.getElementById("navStatusLabel");
+  try {
+    const res = await fetch(`${API}/api/health`, { signal: AbortSignal.timeout(4000) });
+    const d = await res.json();
+    lastHealthAt = new Date();
+    if (d.db_connected) {
+      dot.className = "status-dot online";
+      label.textContent = "Online";
+    } else {
+      dot.className = "status-dot degraded";
+      label.textContent = "Degraded";
+    }
+  } catch (e) {
+    dot.className = "status-dot offline";
+    label.textContent = "Offline";
+  }
+  document.getElementById("navStatusUpdated").textContent = lastHealthAt ? relativeTime(lastHealthAt.toISOString()) : "–";
+}
+
+/* ---------------- toasts ---------------- */
+
+function showToast(type, message) {
+  const stack = document.getElementById("toastStack");
+  const el = document.createElement("div");
+  el.className = `toast toast-${type}`;
+  const iconName = type === "success" ? "check" : type === "error" ? "alert" : "info";
+  el.innerHTML = icon(iconName, 16) + `<span>${escapeHtml(message)}</span>`;
+  el.addEventListener("click", () => dismissToast(el));
+  stack.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => dismissToast(el), 4200);
+}
+
+function dismissToast(el) {
+  if (!el.parentNode) return;
+  el.classList.remove("show");
+  setTimeout(() => el.remove(), 220);
+}
+
+/* ---------------- helpers ---------------- */
+
+function humanBytes(bytes) {
+  if (bytes == null) return "–";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+
+function humanBytesMB(mb) {
+  if (mb == null) return "–";
+  return mb >= 1024 ? (mb / 1024).toFixed(2) + " GB" : mb.toFixed(1) + " MB";
+}
+
+function relativeTime(iso) {
+  if (!iso) return "–";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.max(0, Math.floor(diffMs / 60000));
+  if (mins < 1) return "baru saja";
+  if (mins < 60) return `${mins}m lalu`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}j lalu`;
+  return `${Math.floor(hrs / 24)}h lalu`;
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s ?? "";
+  return div.innerHTML;
+}
+
+/* ---------------- init ---------------- */
+
+function init() {
+  buildChrome();
+  buildRegionCards();
+  buildCreateRingOnce();
+  wireTierCheckboxes();
+  wireLocationInput();
+  wireCreateForm();
+  wireTabButtons();
+  wireDatasetsTab();
+  wireLiveTab();
+  initMap();
+  restoreFormState();
+
+  checkHealth();
+  setInterval(checkHealth, 15000);
+
+  switchTab("create");
+  addLiveLog("info", "Dashboard dimuat");
+}
+
+document.addEventListener("DOMContentLoaded", init);
 </script>
 </body>
 </html>
