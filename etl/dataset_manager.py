@@ -335,16 +335,99 @@ class DatasetManager:
                 raise ValueError("Belum ada job untuk dataset ini")
             if job.status != "PAUSED":
                 raise ValueError(f"Job berstatus {job.status}, bukan PAUSED")
-            job.status = "PROCESSING"
+            # Mirror retry_dataset_job: queue it and let run_dataset_job set the
+            # real stage-specific status, instead of hardcoding "PROCESSING".
+            job.status = "QUEUED"
             job.resumed_at = datetime.now(timezone.utc)
             job.resume_count = (job.resume_count or 0) + 1
-            dataset.status = "PROCESSING"
+            dataset.status = "QUEUED"
             job_id = job.job_id
             resume_count = job.resume_count
         get_pause_event(job_id).set()
         self._spawn_job_runner(job_id)
         logger.info("[DATASET] job_id=%d resumed count=%d", job_id, resume_count)
-        return {"status": "PROCESSING", "resume_count": resume_count}
+        return {"status": "QUEUED", "resume_count": resume_count}
+
+    def retry_dataset_job(self, dataset_id: int) -> dict:
+        with self._db.session() as sess:
+            dataset = sess.get(Dataset, dataset_id)
+            if dataset is None:
+                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+            if dataset.dataset_kind == "LIVE":
+                raise ValueError("Dataset live tidak menggunakan retry, gunakan toggle enable/disable")
+            job = sess.scalar(
+                select(DatasetJob)
+                .where(DatasetJob.dataset_id == dataset_id)
+                .order_by(DatasetJob.created_at.desc())
+            )
+            if job is None:
+                raise ValueError("Belum ada job untuk dataset ini")
+            if job.status != "FAILED":
+                raise ValueError(f"Job berstatus {job.status}, bukan FAILED")
+            job.status = "QUEUED"
+            job.started_at = None
+            job.completed_at = None
+            dataset.status = "QUEUED"
+            job_id = job.job_id
+        get_pause_event(job_id).set()
+        self._spawn_job_runner(job_id)
+        logger.info("[DATASET] job_id=%d retried", job_id)
+        return {"status": "QUEUED", "job_id": job_id}
+
+    def cancel_dataset(self, dataset_id: int, cascade_delete: bool = True) -> dict:
+        with self._db.session() as sess:
+            dataset = sess.get(Dataset, dataset_id)
+            if dataset is None:
+                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+            if dataset.dataset_kind == "LIVE":
+                raise ValueError("Dataset live tidak bisa dibatalkan, gunakan toggle enable/disable")
+            job = sess.scalar(
+                select(DatasetJob)
+                .where(DatasetJob.dataset_id == dataset_id)
+                .order_by(DatasetJob.created_at.desc())
+            )
+            cancellable = {"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING", "PAUSED"}
+            if job is None or job.status not in cancellable:
+                raise ValueError(
+                    f"Job berstatus {job.status if job else 'tidak ada'}, tidak bisa dibatalkan"
+                )
+            job.status = "CANCELLED"
+            job.completed_at = datetime.now(timezone.utc)
+            dataset.status = "CANCELLED"
+            job_id = job.job_id
+        get_cancel_event(job_id).set()
+        get_pause_event(job_id).set()
+
+        deleted_files = 0
+        if cascade_delete:
+            from etl.deletion_manager import DeletionManager
+            tier_result = DeletionManager(self._db, dataset_id).delete_tiers(["RAW", "BRONZE", "SILVER"])
+            deleted_files = tier_result["deleted_count"]
+
+        logger.info(
+            "[DATASET] dataset_id=%d job_id=%d dibatalkan cascade_delete=%s deleted_files=%d",
+            dataset_id, job_id, cascade_delete, deleted_files,
+        )
+        return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": "GOLD"}
+
+    def get_recent_logs(self, dataset_id: int, limit: int = 5, order: str = "desc") -> list[dict]:
+        with self._db.session() as sess:
+            job = sess.scalar(
+                select(DatasetJob)
+                .where(DatasetJob.dataset_id == dataset_id)
+                .order_by(DatasetJob.created_at.desc())
+            )
+            if job is None:
+                return []
+            ts_col = func.coalesce(SceneJobState.completed_at, SceneJobState.started_at, SceneJobState.created_at)
+            stmt = (
+                select(SceneJobState)
+                .where(SceneJobState.job_id == job.job_id)
+                .order_by(ts_col.desc() if order == "desc" else ts_col.asc())
+                .limit(limit)
+            )
+            rows = sess.scalars(stmt).all()
+            return [self._scene_state_to_log_entry(r) for r in rows]
 
     def delete_dataset(self, dataset_id: int, force: bool = False) -> dict:
         with self._db.session() as sess:
@@ -363,9 +446,12 @@ class DatasetManager:
                 raise ValueError("Dataset sedang diproses. Gunakan force=True atau pause dulu.")
             dataset.status = "DELETING"
             job_id = job.job_id if job else None
+            job_was_paused = job.status == "PAUSED" if job else False
             if job and job.status in active_statuses:
                 job.status = "CANCELLED"
-        if job_id is not None and force:
+        if job_id is not None and (force or job_was_paused):
+            # A paused job's thread is parked on pause_event.wait(); wake it
+            # (with cancel set) so it exits instead of leaking forever.
             get_cancel_event(job_id).set()
             get_pause_event(job_id).set()
         self._spawn_deletion_runner(dataset_id)
@@ -596,6 +682,26 @@ class DatasetManager:
             "created_at": j.created_at,
             "started_at": j.started_at,
             "completed_at": j.completed_at,
+        }
+
+    _LOG_STATUS_MAP = {
+        "PENDING": "PENDING",
+        "RUNNING": "IN_PROGRESS",
+        "COMPLETED": "OK",
+        "FAILED": "ERROR",
+        "SKIPPED": "SKIPPED",
+    }
+
+    def _scene_state_to_log_entry(self, s: SceneJobState) -> dict:
+        timestamp = s.completed_at or s.started_at or s.created_at
+        message = s.last_error or f"{s.current_stage or 'QUEUED'} {s.stage_status.lower()}"
+        return {
+            "timestamp": timestamp,
+            "scene_id": s.product_identifier,
+            "stage": s.current_stage or "QUEUED",
+            "status": self._LOG_STATUS_MAP.get(s.stage_status, s.stage_status),
+            "message": message,
+            "error": s.last_error,
         }
 
     def _scene_state_to_dict(self, s: SceneJobState) -> dict:

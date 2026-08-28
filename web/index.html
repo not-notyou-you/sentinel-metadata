@@ -13,6 +13,14 @@
 :root {
   --ink: #0A0E1A;
   --panel: #121A2B;
+  --panel-alt: #182238;
+  --hairline: #232F49;
+  --text: #E7ECF5;
+  --text-dim: #7C8AA5;
+  --cyan: #35D0C0;
+  --amber: #F0A63C;
+  --coral: #EF6461;
+  --silver: #9FB0C9;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
   --font-sans: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --radius: 10px;
@@ -88,8 +96,11 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 28px 60px; }
 .view { border-top: 1px solid var(--hairline); padding-top: 28px; }
 .view.hidden { display: none; }
 
-.create-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 24px; align-items: start; }
-@media (max-width: 900px) { .create-grid { grid-template-columns: 1fr; } }
+.location-section { width: 100%; margin-bottom: 40px; padding-bottom: 40px; border-bottom: 1px solid var(--hairline); }
+.section-title { font-size: 18px; font-weight: 700; margin: 0 0 18px; }
+
+.create-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+@media (max-width: 1200px) { .create-grid { grid-template-columns: 1fr; } }
 
 .panel {
   background: var(--panel);
@@ -138,31 +149,43 @@ details.advanced .field-row-3 { margin-top: 14px; }
 }
 .tier-pill input { accent-color: var(--cyan); }
 
-.region-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px; }
-@media (max-width: 560px) { .region-grid { grid-template-columns: repeat(2, 1fr); } }
+.region-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+@media (max-width: 1200px) { .region-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 768px) { .region-grid { grid-template-columns: 1fr; } }
 .region-card {
   position: relative;
-  border: 1px solid var(--hairline);
+  border: 2px solid var(--hairline);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 14px 16px;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.region-card:hover { border-color: var(--cyan); }
-.region-card.selected { border-color: var(--cyan); background: rgba(53,208,192,0.08); }
-.region-name { font-size: 12px; font-weight: 600; }
-.region-area { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.region-card:hover { border-color: var(--cyan); background: rgba(53,208,192,0.05); }
+.region-card.selected { border-color: var(--cyan); background: rgba(53,208,192,0.15); box-shadow: 0 0 12px rgba(53,208,192,0.3); }
+.region-name { font-size: 13px; font-weight: 600; }
+.region-area { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 .region-check {
-  position: absolute; top: 8px; right: 8px;
+  position: absolute; top: 10px; right: 10px;
   width: 12px; height: 12px; border-radius: 50%;
   border: 1.5px solid var(--hairline);
 }
 .region-card.selected .region-check { background: var(--cyan); border-color: var(--cyan); }
-.map-wrap { margin-top: 12px; }
-.location-map { height: 200px; border-radius: 8px; border: 1px solid var(--hairline); }
+.location-input-label { font-size: 14px; color: var(--text-dim); display: block; margin-bottom: 8px; }
+#fLocation {
+  width: 100%;
+  background: var(--panel-alt);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.map-wrap { margin-top: 16px; }
+.location-map { height: 400px; border-radius: 8px; border: 1px solid var(--hairline); }
 .location-map.hidden { display: none; }
 .map-empty {
-  height: 200px; display: flex; align-items: center; justify-content: center;
+  height: 400px; display: flex; align-items: center; justify-content: center;
   text-align: center; padding: 0 24px;
   border: 1px dashed var(--hairline); border-radius: 8px;
   color: var(--text-dim); font-size: 12px;
@@ -235,6 +258,18 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .card-scenes { margin-top: 16px; border-top: 1px solid var(--hairline); padding-top: 14px; }
 .card-scenes.hidden { display: none; }
+
+.live-logs-title { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 6px; }
+.live-logs { max-height: 150px; overflow-y: auto; background: #0a0e17; border: 1px solid var(--hairline); border-radius: 8px; }
+.log-row { display: grid; grid-template-columns: 62px 1fr 92px 78px 1.4fr; gap: 8px; padding: 4px 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.log-row:nth-child(odd) { background: rgba(255,255,255,0.03); }
+.log-row > span { overflow: hidden; text-overflow: ellipsis; }
+.log-time { color: var(--silver); }
+.log-stage { color: var(--silver); }
+.log-row.log-ok .log-status { color: var(--cyan); }
+.log-row.log-progress .log-status { color: var(--amber); }
+.log-row.log-error .log-status { color: var(--coral); }
+.log-row.log-muted .log-status { color: var(--text-dim); }
 
 .scene-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .scene-table th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--hairline); }
@@ -318,19 +353,21 @@ details.advanced .field-row-3 { margin-top: 14px; }
 <main>
 
   <section class="view" id="view-create">
+    <section class="location-section">
+      <p class="section-title">Pilih Lokasi</p>
+      <div class="region-grid" id="regionGrid"></div>
+      <label class="location-input-label" for="fLocation">Atau cari lokasi lain</label>
+      <input type="text" id="fLocation" placeholder="Cari atau masukkan nama lokasi, mis. Cibubur, Cikarang..." required>
+      <div class="map-wrap">
+        <div class="map-empty" id="mapEmptyState">Pilih wilayah di atas atau ketik lokasi untuk melihat pratinjau area</div>
+        <div class="location-map hidden" id="locationMap"></div>
+      </div>
+    </section>
+
     <div class="create-grid">
       <div class="panel">
         <p class="panel-title">Dataset Baru</p>
         <form id="createForm">
-          <div class="field">
-            <label>Lokasi</label>
-            <div class="region-grid" id="regionGrid"></div>
-            <input type="text" id="fLocation" placeholder="Atau ketik lokasi lain, mis. Cibubur, Cikarang..." required>
-            <div class="map-wrap">
-              <div class="map-empty" id="mapEmptyState">Pilih wilayah di atas atau ketik lokasi untuk melihat pratinjau area</div>
-              <div class="location-map hidden" id="locationMap"></div>
-            </div>
-          </div>
           <div class="field-row">
             <div class="field">
               <label for="fDateStart">Dari tanggal</label>
@@ -461,6 +498,17 @@ details.advanced .field-row-3 { margin-top: 14px; }
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="cancelModal">
+  <div class="modal">
+    <h3>Batalkan dataset ini?</h3>
+    <p>Proses akan dihentikan dan data sementara (RAW, BRONZE, SILVER) akan dihapus. Data GOLD yang sudah selesai tetap disimpan.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelModalCancel">Batal</button>
+      <button class="btn btn-danger" id="cancelModalConfirm">Ya, Batalkan</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="clearModal">
   <div class="modal">
     <h3>Kosongkan dataset live?</h3>
@@ -481,7 +529,7 @@ const TIER_STAGE = { RAW: 'DOWNLOAD', BRONZE: 'CROP', SILVER: 'LEE_FILTER', GOLD
 const TIER_COLORS = { RAW: '#8B7FE8', BRONZE: '#C97C4B', SILVER: '#9FB0C9', GOLD: '#35D0C0' };
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
-const state = { datasets: [], progress: {}, pollTimer: null, livePollTimer: null, regions: [], selectedRegionId: null };
+const state = { datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null, regions: [], selectedRegionId: null, openScenes: new Set() };
 
 async function api(path, options) {
   const opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
@@ -542,11 +590,12 @@ function buildRingSVG(ratios, size) {
   return '<svg viewBox="0 0 ' + size + ' ' + size + '" width="' + size + '" height="' + size + '">' + circles + '</svg>';
 }
 
-function tierCompletionRatios(scenes) {
+function tierCompletionRatios(scenes, requiredTiers) {
   const tiers = ['RAW', 'BRONZE', 'SILVER', 'GOLD'];
   const ratios = {};
   const total = scenes.length;
   tiers.forEach(t => {
+    if (!requiredTiers.includes(t)) { ratios[t] = 0; return; }
     if (total === 0) { ratios[t] = 0; return; }
     const stageIdx = STAGE_ORDER.indexOf(TIER_STAGE[t]);
     let reached = 0;
@@ -604,7 +653,10 @@ let locationRect = null;
 
 function initLocationMap() {
   locationMap = L.map('locationMap', { zoomControl: true, attributionControl: false }).setView([-6.3, 106.9], 9);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(locationMap);
+  L.tileLayer('https://server.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16,
+    attribution: 'Tiles &copy; Esri'
+  }).addTo(locationMap);
 }
 
 function updateMapPreview(bbox) {
@@ -705,6 +757,7 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
     const result = await api('/api/datasets', { method: 'POST', body: JSON.stringify(body) });
     showToast('Dataset dibuat (status: ' + result.status + ')', 'success');
     e.target.reset();
+    document.getElementById('fLocation').value = '';
     document.querySelectorAll('.tier-check').forEach(c => c.checked = c.value === 'GOLD');
     updateRingPreview();
     clearRegionSelection();
@@ -735,12 +788,16 @@ async function refreshProgress() {
       try { state.progress[ds.dataset_id] = await api('/api/datasets/' + ds.dataset_id + '/status'); }
       catch (e) {}
     }
+    if (ACTIVE_STATUSES.has(ds.status) || !state.logs[ds.dataset_id]) {
+      try { state.logs[ds.dataset_id] = await api('/api/datasets/' + ds.dataset_id + '/logs?limit=5'); }
+      catch (e) {}
+    }
   }
   renderDatasets();
 }
 function startDatasetPolling() {
   stopDatasetPolling();
-  state.pollTimer = setInterval(async () => { await loadDatasetsQuiet(); await refreshProgress(); }, 3000);
+  state.pollTimer = setInterval(async () => { await loadDatasetsQuiet(); await refreshProgress(); }, 2000);
 }
 function stopDatasetPolling() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = null; }
 document.getElementById('refreshDatasets').addEventListener('click', loadDatasets);
@@ -760,11 +817,13 @@ function renderDatasetCard(ds) {
   el.className = 'card';
   const prog = state.progress[ds.dataset_id];
   const scenes = prog ? prog.scenes : [];
-  const ratios = tierCompletionRatios(scenes);
+  const ratios = tierCompletionRatios(scenes, ds.required_tiers);
   const ringHTML = buildRingSVG(ratios);
   const statusClass = statusToClass(ds.status);
   const canPause = ['QUEUED', 'PREPARING', 'DOWNLOADING', 'PROCESSING'].includes(ds.status);
   const canResume = ds.status === 'PAUSED';
+  const canRetry = ds.status === 'FAILED';
+  const canCancel = ['DOWNLOADING', 'PROCESSING'].includes(ds.status);
   const canDownload = ds.total_size_bytes > 0;
   const spinning = ACTIVE_STATUSES.has(ds.status) && ds.status !== 'PAUSED';
   el.innerHTML =
@@ -785,16 +844,48 @@ function renderDatasetCard(ds) {
       '<div><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">gagal</span></div>' +
       '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">ukuran</span></div>' +
     '</div>' +
+    renderLogPanel(ds.dataset_id) +
     '<div class="card-actions">' +
       (canPause ? '<button class="btn btn-warn" data-action="pause">Jeda</button>' : '') +
       (canResume ? '<button class="btn btn-accent" data-action="resume">Lanjutkan</button>' : '') +
+      (canRetry ? '<button class="btn btn-accent" data-action="retry">Coba lagi</button>' : '') +
+      (canCancel ? '<button class="btn btn-danger" data-action="cancel">Batalkan</button>' : '') +
       (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
       '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
       '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
     '</div>' +
-    '<div class="card-scenes hidden" id="scenes-' + ds.dataset_id + '"></div>';
+    '<div class="card-scenes' + (state.openScenes.has(ds.dataset_id) ? '' : ' hidden') + '" id="scenes-' + ds.dataset_id + '"></div>';
   el.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', () => handleCardAction(btn.dataset.action, ds.dataset_id)));
+  if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
   return el;
+}
+
+function renderLogPanel(id) {
+  const logs = state.logs[id];
+  if (!logs || logs.length === 0) return '';
+  return '<div class="live-logs-title">Live Logs (terbaru)</div>' +
+    '<div class="live-logs">' +
+      logs.map(l => {
+        const t = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        return '<div class="log-row ' + logStatusClass(l.status) + '">' +
+          '<span class="log-time">' + t + '</span>' +
+          '<span class="log-scene">' + escapeHTML(shortenSceneId(l.scene_id)) + '</span>' +
+          '<span class="log-stage">' + escapeHTML(l.stage) + '</span>' +
+          '<span class="log-status">' + escapeHTML(l.status) + '</span>' +
+          '<span class="log-msg">' + escapeHTML(l.message || '') + '</span>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+}
+function logStatusClass(status) {
+  if (status === 'OK') return 'log-ok';
+  if (status === 'IN_PROGRESS') return 'log-progress';
+  if (status === 'ERROR') return 'log-error';
+  return 'log-muted';
+}
+function shortenSceneId(id) {
+  if (!id) return '-';
+  return id.length > 28 ? id.slice(0, 25) + '...' : id;
 }
 
 async function handleCardAction(action, id) {
@@ -804,12 +895,18 @@ async function handleCardAction(action, id) {
   } else if (action === 'resume') {
     try { await api('/api/datasets/' + id + '/resume', { method: 'POST' }); showToast('Dataset dilanjutkan', 'success'); await refreshProgress(); }
     catch (e) { showToast(e.message, 'error'); }
+  } else if (action === 'retry') {
+    try { await api('/api/pipeline/trigger?dataset_id=' + id, { method: 'POST' }); showToast('Job dijalankan ulang', 'success'); await refreshProgress(); }
+    catch (e) { showToast(e.message, 'error'); }
+  } else if (action === 'cancel') {
+    openCancelModal(id);
   } else if (action === 'delete') {
     openDeleteModal(id);
   } else if (action === 'toggle-scenes') {
     const box = document.getElementById('scenes-' + id);
     box.classList.toggle('hidden');
-    if (!box.classList.contains('hidden')) renderSceneTable(box, id);
+    if (!box.classList.contains('hidden')) { state.openScenes.add(id); renderSceneTable(box, id); }
+    else { state.openScenes.delete(id); }
   }
 }
 
@@ -833,6 +930,22 @@ document.getElementById('deleteConfirm').addEventListener('click', async () => {
     closeDeleteModal();
     await loadDatasets();
   } catch (e) { showToast(e.message, 'error'); }
+});
+
+let pendingCancelId = null;
+function openCancelModal(id) { pendingCancelId = id; document.getElementById('cancelModal').classList.remove('hidden'); }
+function closeCancelModal() { document.getElementById('cancelModal').classList.add('hidden'); pendingCancelId = null; }
+document.getElementById('cancelModalCancel').addEventListener('click', closeCancelModal);
+document.getElementById('cancelModalConfirm').addEventListener('click', async () => {
+  const btn = document.getElementById('cancelModalConfirm');
+  btn.disabled = true; btn.textContent = 'Membatalkan...';
+  try {
+    const r = await api('/api/datasets/' + pendingCancelId + '/cancel', { method: 'POST', body: JSON.stringify({ cascade_delete: true }) });
+    showToast('Dataset dibatalkan (' + r.deleted_files + ' file dihapus, tier ' + r.retained_tier + ' disimpan)', 'success');
+    closeCancelModal();
+    await loadDatasets();
+  } catch (e) { showToast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Ya, Batalkan'; }
 });
 
 async function loadLive() {
@@ -903,6 +1016,7 @@ document.getElementById('backfillForm').addEventListener('submit', async (e) => 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.getElementById('deleteModal').classList.add('hidden');
+    document.getElementById('cancelModal').classList.add('hidden');
     document.getElementById('clearModal').classList.add('hidden');
   }
 });

@@ -1,0 +1,21 @@
+{
+  "dataset_id": 5,
+  "name": "hakim d1",
+  "location_label": "Kota Bogor",
+  "date_start": "2026-07-01",
+  "date_end": "2026-07-31",
+  "required_tiers": [
+    "GOLD"
+  ],
+  "status": "DOWNLOADING",
+  "total_scenes": 3,
+  "completed_scenes": 0,
+  "failed_scenes": 3,
+  "total_size_bytes": 11778320870,
+  "acquisition_dates": [
+    "20260712",
+    "20260720",
+    "20260724"
+  ],
+  "updated_at": "2026-08-28 10:53:46.901963+00:00"
+}

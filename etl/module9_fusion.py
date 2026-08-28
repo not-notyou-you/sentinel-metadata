@@ -32,17 +32,19 @@ from etl.database_client import (
     ProductTierEnum,
     SatelliteScene,
 )
+from etl.constants import (
+    GPM_PRODUCT_SHORT_NAME,
+    GPM_SOURCE,
+    GPM_TILE_ID,
+    MODIS_PRODUCT_SHORT_NAME,
+    MODIS_SOURCE,
+    MODIS_TILE_ID,
+)
 from etl.lineage_tracker import LineageTracker
 
 logger = logging.getLogger(__name__)
 
 ALIGNMENT_WINDOW_HOURS = 24
-MODIS_SOURCE = "MODIS"
-MODIS_PRODUCT_SHORT_NAME = "MCDWD_L3_F2_NRT"
-MODIS_TILE_ID = "MOSAIC"
-GPM_SOURCE = "GPM"
-GPM_PRODUCT_SHORT_NAME = "GPM_3IMERGDF"
-GPM_TILE_ID = "GLOBAL"
 MODIS_NODATA_U8 = 255  # uint8 can't hold NaN; 255 marks a missing/nodata pixel
 HDF5_CHUNK_MAX = 256
 

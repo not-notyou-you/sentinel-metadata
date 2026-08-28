@@ -1,11 +1,12 @@
 # etl/module5_orchestrator.py
 from __future__ import annotations
+import json
 import logging
 import os
 import re
 import shutil
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
@@ -19,6 +20,7 @@ from etl.dataset_manager import (
     get_cancel_event,
     get_pause_event,
 )
+from etl import folder_manager as fm
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
 from etl.module1_download import discover_scenes, download_scene
@@ -61,10 +63,6 @@ def _slug(product_identifier: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", product_identifier)
 
 
-def _dataset_base_dir(dataset_id: int) -> Path:
-    return Path("data") / "datasets" / str(dataset_id)
-
-
 def _bbox_tuple_from_wkt(wkt_str: str) -> tuple[float, float, float, float]:
     return shapely_wkt.loads(wkt_str).bounds
 
@@ -87,9 +85,34 @@ def _dir_size_bytes(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
-def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, list[str]]:
+def _write_dataset_metadata(dsmgr: DatasetManager, dataset_id: int, total_size_bytes: int) -> None:
+    dataset = dsmgr.get_dataset(dataset_id)
+    if dataset is None:
+        return
+    fm.write_dataset_metadata(dataset_id, {
+        "dataset_id": dataset_id,
+        "name": dataset["name"],
+        "location_label": dataset["location_label"],
+        "date_start": dataset["date_start"],
+        "date_end": dataset["date_end"],
+        "required_tiers": dataset["required_tiers"],
+        "status": dataset["status"],
+        "total_scenes": dataset["total_scenes"],
+        "completed_scenes": dataset["completed_scenes"],
+        "failed_scenes": dataset["failed_scenes"],
+        "total_size_bytes": total_size_bytes,
+        "acquisition_dates": fm.list_acquisition_dates(dataset_id),
+        "updated_at": _now(),
+    })
+
+
+def _process_scene(
+    jc: _JobContext, scene_meta: dict, dl_result
+) -> tuple[int, list[str], dict[str, list[str]]]:
     pid = scene_meta["product_identifier"]
+    acq_date = dl_result.acquisition_datetime
     produced_tiers: list[str] = []
+    produced_files: dict[str, list[str]] = {}
 
     scene_id = jc.meta.insert_satellite_scene(
         product_identifier=dl_result.product_identifier,
@@ -127,12 +150,13 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
     )
     jc.meta.complete_job(dl_job_id, output_size_mb=dl_result.file_size_mb)
     produced_tiers.append("RAW")
+    produced_files["RAW"] = [dl_result.vv_tif_path, dl_result.vh_tif_path]
 
     if "CROP" in jc.skip_stages:
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="CROP", stage_status="RUNNING")
     crop_job_id = jc.meta.insert_processing_job(
@@ -141,11 +165,11 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
     jc.meta.start_job(crop_job_id)
 
     slug = _slug(pid)
-    calib_dir = jc.base_dir / "calib_work" / slug
+    calib_dir = fm.get_dataset_path(jc.dataset_id, acq_date) / "_work" / slug
     calib_dir.mkdir(parents=True, exist_ok=True)
     calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))
 
-    bronze_dir = jc.base_dir / "bronze" / slug
+    bronze_dir = fm.get_dataset_path(jc.dataset_id, acq_date, "bronze")
     bronze_dir.mkdir(parents=True, exist_ok=True)
     crop_vv, crop_vh = crop_run(calib_vv, calib_vh, str(bronze_dir), bbox=jc.bbox_tuple)
 
@@ -171,19 +195,20 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
     jc.lineage.record_transformation(raw_vh_id, bronze_vh_id, "CROP", crop_job_id, {"bbox": list(jc.bbox_tuple)})
     jc.meta.complete_job(crop_job_id)
     produced_tiers.append("BRONZE")
+    produced_files["BRONZE"] = [crop_vv, crop_vh]
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="CROP", stage_status="COMPLETED")
 
     if "LEE_FILTER" in jc.skip_stages:
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="LEE_FILTER", stage_status="RUNNING")
     lee_job_id = jc.meta.insert_processing_job(scene_id, "LEE_FILTER", parameters={"window_size": 7, "looks": 1})
     jc.meta.start_job(lee_job_id)
 
-    silver_dir = jc.base_dir / "silver" / slug
+    silver_dir = fm.get_dataset_path(jc.dataset_id, acq_date, "silver")
     silver_dir.mkdir(parents=True, exist_ok=True)
     lee_vv, lee_vh = lee_run(crop_vv, crop_vh, str(silver_dir), window_size=7, looks=1)
 
@@ -203,19 +228,20 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
     jc.lineage.record_transformation(bronze_vh_id, silver_vh_id, "LEE_FILTER", lee_job_id, {"window_size": 7, "looks": 1})
     jc.meta.complete_job(lee_job_id)
     produced_tiers.append("SILVER")
+    produced_files["SILVER"] = [lee_vv, lee_vh]
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="LEE_FILTER", stage_status="COMPLETED")
 
     if "COG_EXPORT" in jc.skip_stages:
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="COG_EXPORT", stage_status="RUNNING")
     cog_job_id = jc.meta.insert_processing_job(scene_id, "COG_EXPORT", parameters={"compression": "LZW", "blocksize": 512})
     jc.meta.start_job(cog_job_id)
 
-    gold_dir = jc.base_dir / "gold" / slug
+    gold_dir = fm.get_dataset_path(jc.dataset_id, acq_date, "gold")
     gold_dir.mkdir(parents=True, exist_ok=True)
     cog_vv, cog_vh = cog_run(lee_vv, lee_vh, str(gold_dir), compression="LZW", blocksize=512)
 
@@ -237,20 +263,23 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
     jc.lineage.record_transformation(silver_vh_id, gold_vh_id, "COG_EXPORT", cog_job_id, {"compression": "LZW", "blocksize": 512})
     jc.meta.complete_job(cog_job_id)
     produced_tiers.append("GOLD")
+    produced_files["GOLD"] = [cog_vv, cog_vh]
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="COG_EXPORT", stage_status="COMPLETED")
 
     if "QUALITY_ANALYTICS" in jc.skip_stages:
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers
+        return scene_id, produced_tiers, produced_files
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="QUALITY_ANALYTICS", stage_status="RUNNING")
     qa_job_id = jc.meta.insert_processing_job(scene_id, "QUALITY_ANALYTICS", parameters={})
     jc.meta.start_job(qa_job_id)
 
+    band_metrics: dict[str, dict] = {}
     for band, path, product_id in (("VV", cog_vv, gold_vv_id), ("VH", cog_vh, gold_vh_id)):
         m = compute_band_metrics(path, band, min_quality_score=jc.min_quality_score)
+        band_metrics[band] = asdict(m)
         jc.meta.insert_quality_metrics(
             scene_id=scene_id, product_id=product_id, band_name=band,
             total_pixels=m.total_pixels, valid_pixels=m.valid_pixels, nodata_pixels=m.nodata_pixels,
@@ -260,26 +289,49 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> tuple[int, l
             speckle_index=m.speckle_index, quality_flag=m.quality_flag,
         )
     jc.meta.complete_job(qa_job_id)
+
+    qa_path = gold_dir / "metadata_qa.json"
+    with open(qa_path, "w") as f:
+        json.dump(
+            {
+                "scene_id": scene_id,
+                "product_identifier": pid,
+                "acquisition_date": acq_date.isoformat() if hasattr(acq_date, "isoformat") else str(acq_date),
+                "bands": band_metrics,
+            },
+            f, indent=2, default=str,
+        )
+
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="QUALITY_ANALYTICS", stage_status="COMPLETED")
 
-    return scene_id, produced_tiers
+    return scene_id, produced_tiers, produced_files
 
 
-def _cleanup_scene_tiers(jc: _JobContext, pid: str, scene_id: int, produced_tiers: list[str]) -> None:
+def _cleanup_scene_tiers(
+    jc: _JobContext,
+    pid: str,
+    scene_id: int,
+    produced_tiers: list[str],
+    produced_files: dict[str, list[str]],
+) -> None:
     tiers_to_delete = compute_tiers_to_delete(produced_tiers, jc.required_tiers)
     if not tiers_to_delete:
         return
-    slug = _slug(pid)
-    tier_dirs = {
-        "RAW": jc.base_dir / "raw" / slug,
-        "BRONZE": jc.base_dir / "bronze" / slug,
-        "SILVER": jc.base_dir / "silver" / slug,
-        "GOLD": jc.base_dir / "gold" / slug,
-    }
     for tier in tiers_to_delete:
-        tier_dir = tier_dirs.get(tier)
-        if tier_dir and tier_dir.exists():
-            shutil.rmtree(tier_dir, ignore_errors=True)
+        tier_dir = None
+        for file_path in produced_files.get(tier, []):
+            p = Path(file_path)
+            tier_dir = p.parent
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError as exc:
+                    logger.error("[ORCH] gagal hapus %s: %s", p, exc)
+        if tier_dir is not None:
+            try:
+                tier_dir.rmdir()
+            except OSError:
+                pass  # masih ada file scene lain di tanggal yang sama
         jc.meta.mark_products_invalid(scene_id=scene_id, dataset_id=jc.dataset_id, tier=tier)
     logger.info("[ORCH] cleanup pid=%s tiers dihapus=%s", pid, sorted(tiers_to_delete))
 
@@ -297,7 +349,8 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, current_stage="DOWNLOAD", stage_status="RUNNING", started_at=_now()
             )
-            raw_dir = jc.base_dir / "raw" / _slug(pid)
+            raw_dir = fm.get_dataset_path(jc.dataset_id, scene_meta["acquisition_datetime"], "raw")
+            raw_dir.mkdir(parents=True, exist_ok=True)
             result = download_scene(scene_meta, output_dir=str(raw_dir), keep_raw=True)
             jc.dsmgr.increment_job_counters(jc.job_id, downloaded=1)
             download_queue.put((scene_meta, result))
@@ -322,9 +375,9 @@ def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queu
         pid = scene_meta["product_identifier"]
         _pipeline_semaphore.acquire()
         try:
-            scene_id, produced_tiers = _process_scene(jc, scene_meta, dl_result)
+            scene_id, produced_tiers, produced_files = _process_scene(jc, scene_meta, dl_result)
             jc.dsmgr.increment_job_counters(jc.job_id, processed=1)
-            cleanup_queue.put((pid, scene_id, produced_tiers))
+            cleanup_queue.put((pid, scene_id, produced_tiers, produced_files))
         except Exception as exc:
             logger.exception("[ORCH] pipeline gagal pid=%s job_id=%d", pid, jc.job_id)
             jc.dsmgr.upsert_scene_job_state(
@@ -341,9 +394,9 @@ def _cleanup_worker(jc: _JobContext, cleanup_queue: Queue) -> None:
         item = cleanup_queue.get()
         if item is None:
             break
-        pid, scene_id, produced_tiers = item
+        pid, scene_id, produced_tiers, produced_files = item
         try:
-            _cleanup_scene_tiers(jc, pid, scene_id, produced_tiers)
+            _cleanup_scene_tiers(jc, pid, scene_id, produced_tiers, produced_files)
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, current_stage="CLEANUP", stage_status="COMPLETED", completed_at=_now()
             )
@@ -380,7 +433,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     min_cloud_cover = quality_settings.get("min_cloud_cover")
     skip_stages = compute_skip_stages(required_tiers)
     bbox_tuple = _bbox_tuple_from_wkt(bbox_wkt)
-    base_dir = _dataset_base_dir(dataset_id)
+    base_dir = fm.get_dataset_root(dataset_id)
     base_dir.mkdir(parents=True, exist_ok=True)
 
     pause_event = get_pause_event(job_id)
@@ -447,6 +500,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
 
     total_size = _dir_size_bytes(base_dir)
     dsmgr.set_dataset_size(dataset_id, total_size)
+    _write_dataset_metadata(dsmgr, dataset_id, total_size)
 
     if cancel_event.is_set():
         dsmgr.set_job_status(job_id, "CANCELLED", completed_at=_now())

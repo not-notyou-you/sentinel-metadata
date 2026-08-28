@@ -108,9 +108,12 @@ CREATE INDEX IF NOT EXISTS idx_scene_job_state_stage_status
 CREATE INDEX IF NOT EXISTS idx_scene_job_state_scene_id
     ON scene_job_state (scene_id) WHERE scene_id IS NOT NULL;
 
+-- dataset_id is intentionally NOT a FK to datasets: a cleanup_operations row
+-- must survive its dataset being deleted so deletion-progress can still be
+-- read after the delete completes (see migration 006).
 CREATE TABLE IF NOT EXISTS cleanup_operations (
     id             BIGSERIAL       PRIMARY KEY,
-    dataset_id     INTEGER         NOT NULL REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+    dataset_id     INTEGER         NOT NULL,
     job_id         BIGINT          REFERENCES dataset_jobs(job_id) ON DELETE SET NULL,
     operation_type VARCHAR(20)     NOT NULL,
     status         VARCHAR(20)     NOT NULL DEFAULT 'PENDING',

@@ -555,7 +555,6 @@ class Dataset(Base):
     region = relationship("RegionOfInterest", back_populates="datasets")
     jobs = relationship("DatasetJob", back_populates="dataset", cascade="all, delete-orphan")
     products = relationship("DataProduct", back_populates="dataset")
-    cleanup_operations = relationship("CleanupOperation", back_populates="dataset", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Dataset id={self.dataset_id} name={self.name} kind={self.dataset_kind} status={self.status}>"
@@ -622,7 +621,9 @@ class SceneJobState(Base):
 class CleanupOperation(Base):
     __tablename__ = "cleanup_operations"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    dataset_id = Column(Integer, ForeignKey("datasets.dataset_id", ondelete="CASCADE"), nullable=False)
+    # Not a FK: this row must outlive its dataset so deletion-progress
+    # remains readable after the dataset row is deleted (migration 006).
+    dataset_id = Column(Integer, nullable=False)
     job_id = Column(BigInteger, ForeignKey("dataset_jobs.job_id", ondelete="SET NULL"))
     operation_type = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default="PENDING")
@@ -634,7 +635,6 @@ class CleanupOperation(Base):
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
 
-    dataset = relationship("Dataset", back_populates="cleanup_operations")
     job = relationship("DatasetJob", back_populates="cleanup_operations")
 
     def __repr__(self) -> str:

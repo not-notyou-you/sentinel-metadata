@@ -43,6 +43,20 @@ class MetadataManager:
             if not stage:
                 raise ValueError(f"Unknown stage_name: '{stage_name}'. Check processing_stages table.")
 
+            existing_job_id = sess.scalar(
+                select(ProcessingJob.job_id).where(
+                    ProcessingJob.scene_id == scene_id,
+                    ProcessingJob.stage_id == stage.stage_id,
+                    ProcessingJob.attempt_number == attempt_number,
+                )
+            )
+            if existing_job_id:
+                logger.warning(
+                    "[JOB] Duplicate job skipped: scene=%d stage=%s attempt=%d (job_id=%d)",
+                    scene_id, stage_name, attempt_number, existing_job_id,
+                )
+                return existing_job_id
+
             job = ProcessingJob(
                 scene_id=scene_id,
                 stage_id=stage.stage_id,
@@ -175,6 +189,7 @@ class MetadataManager:
                     DataProduct.scene_id == scene_id,
                     DataProduct.band_name == band_name,
                     DataProduct.product_tier == product_tier,
+                    DataProduct.dataset_id == dataset_id,
                     DataProduct.is_latest == True,
                 )
             ).update({"is_latest": False})

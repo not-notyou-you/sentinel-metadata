@@ -5,7 +5,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import select
-from etl.database_client import CleanupOperation, Dataset, DatabaseClient
+from etl import folder_manager as fm
+from etl.database_client import CleanupOperation, DataProduct, Dataset, DatabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class DeletionManager:
     def __init__(self, db: DatabaseClient, dataset_id: int) -> None:
         self._db = db
         self._dataset_id = dataset_id
-        self._base_dir = Path("data") / "datasets" / str(dataset_id)
+        self._base_dir = fm.get_dataset_root(dataset_id)
         self._manifest_path = self._base_dir / ".deletion_manifest.json"
         self._last_op_id: int | None = None
 
@@ -58,6 +59,64 @@ class DeletionManager:
             deleted_count=result["deleted_count"], freed_bytes=result["freed_bytes"],
         )
         return result
+
+    def delete_tiers(self, tiers: list[str]) -> dict:
+        """
+        Delete only the given tiers (e.g. RAW/BRONZE/SILVER on cancel) across
+        every acquisition date, leaving the rest of the dataset intact.
+        Unlike delete_all/clear_files_only this is not manifest-based: it is
+        meant to run synchronously inside the cancel request, so the running
+        job's own threads may still be mid-write for a moment after the
+        cancel signal — missing files are skipped rather than treated as
+        errors.
+        """
+        tiers_lower = [t.lower() for t in tiers]
+        tiers_upper = [t.upper() for t in tiers]
+
+        op_id = self._create_tier_cleanup_operation()
+        self._update_operation_status(op_id, "IN_PROGRESS", started_at=_now())
+
+        deleted_count = 0
+        freed_bytes = 0
+        for acq_date in fm.list_acquisition_dates(self._dataset_id):
+            for tier in tiers_lower:
+                for f in fm.get_tier_files(self._dataset_id, acq_date, tier):
+                    try:
+                        size = f.stat().st_size
+                        f.unlink()
+                        deleted_count += 1
+                        freed_bytes += size
+                    except OSError as exc:
+                        logger.error("[TIER_CLEANUP] gagal hapus %s: %s", f, exc)
+
+        self._remove_empty_dirs()
+
+        with self._db.session() as sess:
+            sess.query(DataProduct).filter(
+                DataProduct.dataset_id == self._dataset_id,
+                DataProduct.product_tier.in_(tiers_upper),
+            ).delete(synchronize_session=False)
+
+        self._update_operation_status(
+            op_id, "COMPLETED", completed_at=_now(),
+            total_files=deleted_count, deleted_count=deleted_count, freed_bytes=freed_bytes,
+        )
+        logger.info(
+            "[TIER_CLEANUP] dataset_id=%d tiers=%s: %d file, %.2f MB dibebaskan",
+            self._dataset_id, tiers_upper, deleted_count, freed_bytes / 1e6,
+        )
+        return {"deleted_count": deleted_count, "freed_bytes": freed_bytes}
+
+    def _create_tier_cleanup_operation(self) -> int:
+        with self._db.session() as sess:
+            op = CleanupOperation(
+                dataset_id=self._dataset_id,
+                operation_type="TIER_CLEANUP",
+                status="PENDING",
+            )
+            sess.add(op)
+            sess.flush()
+            return op.id
 
     def _load_or_create_manifest(self) -> dict:
         if self._manifest_path.exists():

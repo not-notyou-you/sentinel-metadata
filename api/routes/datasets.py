@@ -5,22 +5,25 @@ import os
 import re
 import tempfile
 import zipfile
-from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from api.schemas import (
+    DatasetCancelRequest,
+    DatasetCancelResponse,
     DatasetCreateRequest,
     DatasetCreateResponse,
     DatasetDeleteResponse,
     DatasetDetail,
     DatasetListResponse,
+    DatasetLogEntry,
     DatasetPauseRequest,
     DatasetPauseResponse,
     DatasetProgressResponse,
     DatasetResumeResponse,
     DeletionProgressResponse,
 )
+from etl import folder_manager as fm
 from etl.database_client import DatabaseClient
 from etl.dataset_manager import DatasetManager
 
@@ -109,6 +112,32 @@ async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db))
     return DatasetResumeResponse(**result)
 
 
+@router.post("/{dataset_id}/cancel", response_model=DatasetCancelResponse, summary="Batalkan dataset yang sedang berjalan")
+async def cancel_dataset(
+    dataset_id: int,
+    req: DatasetCancelRequest = DatasetCancelRequest(),
+    db: DatabaseClient = Depends(_get_db),
+) -> DatasetCancelResponse:
+    try:
+        result = _mgr(db).cancel_dataset(dataset_id, cascade_delete=req.cascade_delete)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return DatasetCancelResponse(**result)
+
+
+@router.get("/{dataset_id}/logs", response_model=list[DatasetLogEntry], summary="Log aktivitas terbaru per scene")
+async def get_dataset_logs(
+    dataset_id: int,
+    limit: int = Query(5, ge=1, le=100),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    db: DatabaseClient = Depends(_get_db),
+) -> list[DatasetLogEntry]:
+    if _mgr(db).get_dataset(dataset_id) is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+    entries = _mgr(db).get_recent_logs(dataset_id, limit=limit, order=order)
+    return [DatasetLogEntry(**e) for e in entries]
+
+
 @router.delete("/{dataset_id}", response_model=DatasetDeleteResponse, summary="Hapus dataset")
 async def delete_dataset(
     dataset_id: int,
@@ -136,7 +165,7 @@ async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
-    base_dir = Path("data") / "datasets" / str(dataset_id)
+    base_dir = fm.get_dataset_root(dataset_id)
     files = [f for f in base_dir.rglob("*") if f.is_file()] if base_dir.exists() else []
     if not files:
         raise HTTPException(404, "Dataset belum memiliki file untuk diunduh")
@@ -154,3 +183,55 @@ async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db
         media_type="application/zip",
         background=BackgroundTask(os.remove, tmp.name),
     )
+
+
+@router.get("/{dataset_id}/storage/summary", summary="Ringkasan storage per tier untuk dataset ini")
+async def get_dataset_storage_summary(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> dict:
+    if _mgr(db).get_dataset(dataset_id) is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    dates = fm.list_acquisition_dates(dataset_id)
+    tiers: dict[str, dict] = {tier: {"file_count": 0, "size_bytes": 0} for tier in fm.TIERS}
+    for acq_date in dates:
+        for tier in fm.TIERS:
+            for f in fm.get_tier_files(dataset_id, acq_date, tier):
+                tiers[tier]["file_count"] += 1
+                tiers[tier]["size_bytes"] += f.stat().st_size
+
+    for stats in tiers.values():
+        stats["size_mb"] = round(stats["size_bytes"] / (1024 ** 2), 3)
+
+    total_bytes = sum(t["size_bytes"] for t in tiers.values())
+    return {
+        "dataset_id": dataset_id,
+        "acquisition_dates": dates,
+        "tiers": tiers,
+        "total_size_bytes": total_bytes,
+        "total_size_mb": round(total_bytes / (1024 ** 2), 3),
+    }
+
+
+@router.get("/{dataset_id}/storage/files/{tier}", summary="List file dataset ini per tier")
+async def list_dataset_tier_files(
+    dataset_id: int,
+    tier: str,
+    acquisition_date: str | None = Query(None, description="Filter tanggal YYYYMMDD, kosongkan untuk semua tanggal"),
+    db: DatabaseClient = Depends(_get_db),
+) -> dict:
+    if _mgr(db).get_dataset(dataset_id) is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+    if tier.lower() not in fm.TIERS:
+        raise HTTPException(400, f"Tier tidak valid: {tier}. Valid: {fm.TIERS}")
+
+    dates = [acquisition_date] if acquisition_date else fm.list_acquisition_dates(dataset_id)
+    result = []
+    for d in dates:
+        files = fm.get_tier_files(dataset_id, d, tier)
+        result.append({
+            "acquisition_date": d,
+            "files": [
+                {"name": f.name, "path": str(f), "size_mb": round(f.stat().st_size / (1024 ** 2), 3)}
+                for f in files
+            ],
+        })
+    return {"dataset_id": dataset_id, "tier": tier.lower(), "dates": result}

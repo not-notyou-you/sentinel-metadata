@@ -4,12 +4,22 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from sqlalchemy import select
+from etl.constants import (
+    GPM_PRODUCT_SHORT_NAME,
+    GPM_SOURCE,
+    GPM_TILE_ID,
+    MODIS_PRODUCT_SHORT_NAME,
+    MODIS_SOURCE,
+    MODIS_TILE_ID,
+)
 from etl.database_client import DatabaseClient, Dataset, DatasetJob, LiveDatasetSource
 from etl.dataset_manager import DatasetManager
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
 from etl.module1_download import discover_scenes
 from etl.module5_orchestrator import run_dataset_job
+from etl.module7_modis_download import download_modis_scene
+from etl.module8_gpm_download import download_gpm_scene
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +31,6 @@ _DEFAULT_LOOKBACK_DAYS = 7
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _dataset_base_dir(dataset_id: int) -> Path:
-    return Path("data") / "datasets" / str(dataset_id)
-
-
-def _safe_rmtree(path: Path) -> None:
-    import shutil
-    shutil.rmtree(path, ignore_errors=True)
 
 
 class LiveScheduler:
@@ -154,57 +155,66 @@ class LiveScheduler:
         job_id = self._create_live_job(live["dataset_id"], since.date(), date_to.date(), "LIVE_INGEST")
         run_dataset_job(self._db, job_id)
         self._update_source_check("SENTINEL1", last_ingest=_now())
+        self._build_fusion_stacks(live, scenes)
         return True
 
+    def _build_fusion_stacks(self, live: dict, scenes: list[dict]) -> None:
+        from etl.module9_fusion import create_fusion_stack
+
+        aoi_bbox = self._bbox_tuple(live["bbox_wkt"])
+        for scene in scenes:
+            s1_date = scene["acquisition_datetime"].date()
+            try:
+                fusion_id = create_fusion_stack(
+                    dataset_id=live["dataset_id"],
+                    s1_date=s1_date,
+                    aoi_bbox=aoi_bbox,
+                    db=self._db,
+                )
+                logger.info("[LIVE] Fusion stack dibuat fusion_id=%d tanggal=%s", fusion_id, s1_date)
+            except Exception:
+                logger.exception("[LIVE] Fusion stack gagal untuk tanggal=%s", s1_date)
+
     def _check_and_ingest_modis(self, live: dict, source: dict) -> bool:
-        from etl.module7_modis_download import discover_modis_flood_files, download_modis_file, hdf_to_geotiff
-
-        tiles = source["source_config"].get("tiles", ["h30v08", "h31v08"])
+        dataset_id = live["dataset_id"]
         today = _now()
-
-        try:
-            items = discover_modis_flood_files(today, tiles)
-        except Exception:
-            logger.exception("[LIVE] MODIS: gagal cek ketersediaan")
-            self._update_source_check("MODIS", last_check=_now())
-            return False
+        since = source["last_ingest"] or (today - timedelta(days=_DEFAULT_LOOKBACK_DAYS))
+        bbox_tuple = self._bbox_tuple(live["bbox_wkt"])
 
         self._update_source_check("MODIS", last_check=_now())
 
-        if not items:
-            logger.info("[LIVE] MODIS: tidak ada produk baru")
+        try:
+            _product_id, metadata = download_modis_scene(dataset_id, since, today, bbox_tuple)
+        except NotImplementedError:
+            logger.info("[LIVE] MODIS: download belum diimplementasikan, skip")
+            return False
+        except Exception:
+            logger.exception("[LIVE] MODIS: gagal download/proses")
             return False
 
-        dataset_id = live["dataset_id"]
         meta = MetadataManager(self._db)
         lineage = LineageTracker(self._db)
-        gold_dir = _dataset_base_dir(dataset_id) / "gold" / f"modis_{today.strftime('%Y%m%d')}"
-        raw_work_dir = _dataset_base_dir(dataset_id) / "raw_work" / "modis"
-        gold_dir.mkdir(parents=True, exist_ok=True)
-        raw_work_dir.mkdir(parents=True, exist_ok=True)
-
-        job_id = self._create_live_job(dataset_id, today.date(), today.date(), "LIVE_INGEST")
+        self._create_live_job(dataset_id, since.date(), today.date(), "LIVE_INGEST")
+        scene_id = self._resolve_placeholder_scene(dataset_id, live["region_id"])
+        processing_job_id = meta.insert_processing_job(
+            scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": "MODIS"}
+        )
         registered = 0
-        for item in items:
+        for output in metadata["outputs"]:
             try:
-                nasa_scene_id = meta.get_nasa_scene("MODIS", item["tile"], "MCDWD", today.date())
-                if nasa_scene_id:
-                    continue
-                hdf_path = download_modis_file(item, str(raw_work_dir))
-                flood_tif = str(gold_dir / f"{Path(item['file_name']).stem}_flood.tif")
-                hdf_to_geotiff(hdf_path, "Flood 1-day 250m", flood_tif)
+                flood_tif = output["flood_path"]
                 meta.insert_nasa_scene(
-                    source="MODIS",
-                    tile_id=item["tile"],
-                    product_short_name="MCDWD",
-                    acquisition_date=today.date(),
+                    source=MODIS_SOURCE,
+                    tile_id=MODIS_TILE_ID,
+                    product_short_name=MODIS_PRODUCT_SHORT_NAME,
+                    acquisition_date=date.fromisoformat(output["date"]),
                     region_id=live["region_id"],
                     raw_file_path=flood_tif,
-                    download_url=item["download_url"],
+                    download_url=None,
                 )
                 meta.insert_data_product(
-                    scene_id=self._resolve_placeholder_scene(dataset_id, live["region_id"]),
-                    job_id=job_id,
+                    scene_id=scene_id,
+                    job_id=processing_job_id,
                     dataset_id=dataset_id,
                     product_tier="GOLD",
                     product_type="MODIS_FLOOD",
@@ -216,20 +226,16 @@ class LiveScheduler:
                 )
                 registered += 1
             except Exception:
-                logger.exception("[LIVE] MODIS: gagal proses tile=%s", item.get("tile"))
-        _safe_rmtree(raw_work_dir)
+                logger.exception("[LIVE] MODIS: gagal registrasi produk tanggal=%s", output.get("date"))
         if registered:
             self._update_source_check("MODIS", last_ingest=_now())
         return registered > 0
 
     def _check_and_ingest_gpm(self, live: dict, source: dict) -> bool:
-        from etl.module8_gpm_download import download_gpm_daily, crop_to_bbox_netcdf
-        from shapely import wkt as shapely_wkt
-
         today = _now()
         meta = MetadataManager(self._db)
         try:
-            nasa_scene_id = meta.get_nasa_scene("GPM", "GLOBAL", "IMERGDF", today.date())
+            nasa_scene_id = meta.get_nasa_scene(GPM_SOURCE, GPM_TILE_ID, GPM_PRODUCT_SHORT_NAME, today.date())
         except Exception:
             nasa_scene_id = None
 
@@ -240,53 +246,61 @@ class LiveScheduler:
             return False
 
         dataset_id = live["dataset_id"]
-        lineage = LineageTracker(self._db)
-        gold_dir = _dataset_base_dir(dataset_id) / "gold" / f"gpm_{today.strftime('%Y%m%d')}"
-        raw_work_dir = _dataset_base_dir(dataset_id) / "raw_work" / "gpm"
-        gold_dir.mkdir(parents=True, exist_ok=True)
-        raw_work_dir.mkdir(parents=True, exist_ok=True)
+        bbox_tuple = self._bbox_tuple(live["bbox_wkt"])
 
         try:
-            bbox_tuple = shapely_wkt.loads(live["bbox_wkt"]).bounds
-            nc_path = download_gpm_daily(today, str(raw_work_dir))
-            tif_path = str(gold_dir / f"gpm_{today.strftime('%Y%m%d')}_crop.tif")
-            crop_to_bbox_netcdf(nc_path, bbox_tuple, tif_path)
+            _product_ids, metadata = download_gpm_scene(dataset_id, today, bbox_tuple)
+        except NotImplementedError:
+            logger.info("[LIVE] GPM: download belum diimplementasikan, skip")
+            return False
         except Exception:
             logger.exception("[LIVE] GPM: gagal download/proses")
-            _safe_rmtree(raw_work_dir)
             return False
 
-        job_id = self._create_live_job(dataset_id, today.date(), today.date(), "LIVE_INGEST")
-        try:
-            meta.insert_nasa_scene(
-                source="GPM",
-                tile_id="GLOBAL",
-                product_short_name="IMERGDF",
-                acquisition_date=today.date(),
-                region_id=live["region_id"],
-                raw_file_path=tif_path,
-                download_url=None,
-            )
-            meta.insert_data_product(
-                scene_id=self._resolve_placeholder_scene(dataset_id, live["region_id"]),
-                job_id=job_id,
-                dataset_id=dataset_id,
-                product_tier="GOLD",
-                product_type="GPM_RAINFALL",
-                band_name="RAIN_24H",
-                file_path=tif_path,
-                file_name=Path(tif_path).name,
-                file_size_mb=round(Path(tif_path).stat().st_size / (1024 ** 2), 3),
-                data_hash_sha256=lineage.compute_sha256(tif_path),
-            )
-        except Exception:
-            logger.exception("[LIVE] GPM: gagal registrasi produk")
-            _safe_rmtree(raw_work_dir)
-            return False
+        lineage = LineageTracker(self._db)
+        self._create_live_job(dataset_id, today.date(), today.date(), "LIVE_INGEST")
+        scene_id = self._resolve_placeholder_scene(dataset_id, live["region_id"])
+        processing_job_id = meta.insert_processing_job(
+            scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": "GPM"}
+        )
+        registered = 0
+        for window_name, output in metadata["windows"].items():
+            try:
+                tif_path = output["path"]
+                meta.insert_nasa_scene(
+                    source=GPM_SOURCE,
+                    tile_id=GPM_TILE_ID,
+                    product_short_name=GPM_PRODUCT_SHORT_NAME,
+                    acquisition_date=today.date(),
+                    region_id=live["region_id"],
+                    raw_file_path=tif_path,
+                    download_url=None,
+                )
+                meta.insert_data_product(
+                    scene_id=scene_id,
+                    job_id=processing_job_id,
+                    dataset_id=dataset_id,
+                    product_tier="GOLD",
+                    product_type="GPM_RAINFALL",
+                    band_name=f"RAIN_{window_name.upper()}",
+                    file_path=tif_path,
+                    file_name=Path(tif_path).name,
+                    file_size_mb=round(Path(tif_path).stat().st_size / (1024 ** 2), 3),
+                    data_hash_sha256=lineage.compute_sha256(tif_path),
+                )
+                registered += 1
+            except Exception:
+                logger.exception("[LIVE] GPM: gagal registrasi produk window=%s", window_name)
 
-        _safe_rmtree(raw_work_dir)
-        self._update_source_check("GPM", last_ingest=_now())
-        return True
+        if registered:
+            self._update_source_check("GPM", last_ingest=_now())
+        return registered > 0
+
+    @staticmethod
+    def _bbox_tuple(bbox_wkt: str) -> tuple[float, float, float, float]:
+        from shapely import wkt as shapely_wkt
+
+        return shapely_wkt.loads(bbox_wkt).bounds
 
     def _resolve_placeholder_scene(self, dataset_id: int, region_id: int) -> int:
         meta = MetadataManager(self._db)

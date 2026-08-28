@@ -327,6 +327,25 @@ class DatasetDeleteResponse(BaseModel):
     dataset_id: int
 
 
+class DatasetCancelRequest(BaseModel):
+    cascade_delete: bool = True
+
+
+class DatasetCancelResponse(BaseModel):
+    status: str
+    deleted_files: int
+    retained_tier: str
+
+
+class DatasetLogEntry(BaseModel):
+    timestamp: datetime
+    scene_id: str
+    stage: str
+    status: str
+    message: str
+    error: str | None
+
+
 class CleanupOperationItem(BaseModel):
     id: int
     dataset_id: int

@@ -2,19 +2,16 @@
 from __future__ import annotations
 
 import logging
-import threading
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from etl.database_client import DatabaseClient, ProcessingJob, SatelliteScene
+from etl.dataset_manager import DatasetManager
 from etl.metadata_manager import MetadataManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-_trigger_lock = threading.Lock()
-_trigger_running = False
 
 
 def _get_db() -> DatabaseClient:
@@ -61,31 +58,15 @@ async def current_pipeline_status(db: DatabaseClient = Depends(_get_db)) -> dict
     }
 
 
-def _run_pipeline_background() -> None:
-    global _trigger_running
-    from etl.scheduler import load_pipeline_config, run_pipeline_once
-    try:
-        cfg = load_pipeline_config()
-        run_pipeline_once(cfg)
-    except Exception:
-        logger.exception("[pipeline] background run failed")
-    finally:
-        with _trigger_lock:
-            _trigger_running = False
-
-
 @router.post(
     "/trigger",
-    summary="Jalankan pipeline sekarang",
-    description="Memicu satu siklus pipeline (discover, download, kalibrasi, crop, filter, export, QA) di background thread.",
+    summary="Retry job dataset yang gagal",
+    description="Menjalankan ulang job pipeline terakhir untuk sebuah dataset, hanya jika job tersebut berstatus FAILED.",
 )
-async def trigger_pipeline() -> dict:
-    global _trigger_running
-    with _trigger_lock:
-        if _trigger_running:
-            return {"started": False, "message": "Pipeline run sudah berjalan"}
-        _trigger_running = True
-
-    thread = threading.Thread(target=_run_pipeline_background, daemon=True)
-    thread.start()
-    return {"started": True, "message": "Pipeline run dimulai di background"}
+async def trigger_pipeline(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> dict:
+    mgr = DatasetManager(db)
+    try:
+        result = mgr.retry_dataset_job(dataset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"started": True, "dataset_id": dataset_id, **result}
