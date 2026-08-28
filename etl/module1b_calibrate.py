@@ -79,7 +79,7 @@ def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_
             "dtype": "float32",
             "crs": dst_crs,
             "transform": transform,
-            "nodata": 0.0,
+            "nodata": float("nan"),
         }
 
         with rasterio.open(output_path, "w", **dst_meta) as dst:
@@ -90,6 +90,7 @@ def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_
                 gcps=gcps,
                 dst_transform=transform,
                 dst_crs=dst_crs,
+                dst_nodata=float("nan"),
                 resampling=Resampling.bilinear,
             )
 

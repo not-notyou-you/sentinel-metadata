@@ -1,12 +1,3 @@
--- database/indexes.sql
--- Additional performance indexes beyond the ones in schema.sql.
--- Run AFTER schema.sql to add composite and covering indexes for common query patterns.
---
--- Author : Julius Marselinus (BRONTO) - NIM 00000111989
-
--- ---------------------------------------------------------------------------
--- Composite indexes for common API query patterns
--- ---------------------------------------------------------------------------
 
 -- Most common query: scenes filtered by region + date range + availability
 CREATE INDEX IF NOT EXISTS idx_scenes_region_date

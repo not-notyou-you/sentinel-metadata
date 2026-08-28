@@ -1,15 +1,3 @@
--- =============================================================================
--- SENTINEL-1 FLOOD DETECTION DATA PIPELINE
--- Database Schema: Production-Ready DDL
--- Author  : Julius Marselinus (BRONTO) - NIM 00000111989
--- Program : Sistem Informasi - Universitas Multimedia Nusantara
--- Version : 1.0.0
--- Updated : 2026-06-29
--- =============================================================================
--- Target  : PostgreSQL 14+
--- Extensions: PostGIS (geospatial), TimescaleDB (time-series hypertables)
--- Normalization: 3NF compliant
--- =============================================================================
 
 -- ---------------------------------------------------------------------------
 -- EXTENSIONS

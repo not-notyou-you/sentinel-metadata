@@ -1,29 +1,28 @@
 # api/routes/datasets.py
-"""
-POST   /api/datasets                — queue a new dataset build
-GET    /api/datasets                — list datasets
-GET    /api/datasets/{id}           — dataset detail
-POST   /api/datasets/{id}/pause     — pause processing
-POST   /api/datasets/{id}/resume    — resume processing
-DELETE /api/datasets/{id}           — delete dataset (and its scene/product rows)
-GET    /api/datasets/{id}/status    — scene-level progress summary
-GET    /api/datasets/{id}/download  — download built dataset (not yet implemented)
-"""
-
 from __future__ import annotations
-
 import logging
-
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-
-from etl.database_client import (
-    DatabaseClient,
-    Dataset,
-    DatasetProduct,
-    DatasetScene,
-    ProductTierEnum,
+import os
+import re
+import tempfile
+import zipfile
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+from api.schemas import (
+    DatasetCreateRequest,
+    DatasetCreateResponse,
+    DatasetDeleteResponse,
+    DatasetDetail,
+    DatasetListResponse,
+    DatasetPauseRequest,
+    DatasetPauseResponse,
+    DatasetProgressResponse,
+    DatasetResumeResponse,
+    DeletionProgressResponse,
 )
+from etl.database_client import DatabaseClient
+from etl.dataset_manager import DatasetManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -34,246 +33,124 @@ def _get_db() -> DatabaseClient:
     return get_db()
 
 
-# ---------------------------------------------------------------------------
-# Request / response schemas
-# ---------------------------------------------------------------------------
-
-class DatasetCreateRequest(BaseModel):
-    location: str
-    date_start: str
-    date_end: str
-    tiers: list[str] = Field(..., min_length=1)
-    name: str
-    description: str | None = None
-    quality_settings: dict | None = None
+def _mgr(db: DatabaseClient) -> DatasetManager:
+    return DatasetManager(db)
 
 
-class DatasetCreateResponse(BaseModel):
-    dataset_id: int
-    status: str
-    created_at: str
+def _slugify(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name.strip()) or "dataset"
 
 
-class DatasetListItem(BaseModel):
-    id: int
-    name: str
-    location: str
-    status: str
-    created_at: str
-
-
-class DatasetListResponse(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    items: list[DatasetListItem]
-
-
-class DatasetDetail(BaseModel):
-    id: int
-    name: str
-    location: str
-    date_start: str
-    date_end: str
-    required_tiers: list | None
-    quality_settings: dict | None
-    status: str
-    created_at: str
-
-
-class DatasetStatusResponse(BaseModel):
-    dataset_id: int
-    status: str
-    total_scenes: int
-    completed: int
-    failed: int
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_dataset_or_404(sess, dataset_id: int) -> Dataset:
-    ds = sess.get(Dataset, dataset_id)
-    if not ds:
-        raise HTTPException(404, f"Dataset {dataset_id} not found")
-    return ds
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "",
-    response_model=DatasetCreateResponse,
-    status_code=201,
-    summary="Queue a new dataset build",
-)
+@router.post("", response_model=DatasetCreateResponse, summary="Buat dataset baru")
 async def create_dataset(
-    payload: DatasetCreateRequest,
+    req: DatasetCreateRequest,
     db: DatabaseClient = Depends(_get_db),
 ) -> DatasetCreateResponse:
-    valid_tiers = {t.value for t in ProductTierEnum}
-    invalid = [t for t in payload.tiers if t not in valid_tiers]
-    if invalid:
-        raise HTTPException(400, f"Invalid tiers: {invalid}. Valid: {sorted(valid_tiers)}")
-
-    with db.session() as sess:
-        ds = Dataset(
-            name=payload.name,
-            location=payload.location,
-            date_start=payload.date_start,
-            date_end=payload.date_end,
-            required_tiers=payload.tiers,
-            quality_settings=payload.quality_settings or {},
-            status="QUEUED",
+    try:
+        result = _mgr(db).create_dataset(
+            location=req.location,
+            date_start=req.date_start,
+            date_end=req.date_end,
+            tiers=req.tiers,
+            name=req.name,
+            description=req.description,
+            quality_settings=req.quality_settings.model_dump() if req.quality_settings else None,
         )
-        sess.add(ds)
-        sess.flush()
-        return DatasetCreateResponse(
-            dataset_id=ds.id,
-            status=ds.status,
-            created_at=str(ds.created_at),
-        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc))
+    return DatasetCreateResponse(**result)
 
 
-@router.get(
-    "",
-    response_model=DatasetListResponse,
-    summary="List datasets",
-)
+@router.get("", response_model=DatasetListResponse, summary="List dataset")
 async def list_datasets(
-    limit: int = 50,
-    offset: int = 0,
     db: DatabaseClient = Depends(_get_db),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ) -> DatasetListResponse:
-    with db.session() as sess:
-        total = sess.query(Dataset).count()
-        items = (
-            sess.query(Dataset)
-            .order_by(Dataset.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-            .all()
-        )
-        return DatasetListResponse(
-            total=total,
-            limit=limit,
-            offset=offset,
-            items=[
-                DatasetListItem(
-                    id=d.id,
-                    name=d.name,
-                    location=d.location,
-                    status=d.status,
-                    created_at=str(d.created_at),
-                )
-                for d in items
-            ],
-        )
+    result = _mgr(db).list_datasets(limit=limit, offset=offset, dataset_kind="STANDARD")
+    return DatasetListResponse(**result)
 
 
-@router.get(
-    "/{dataset_id}",
-    response_model=DatasetDetail,
-    summary="Get dataset detail",
-)
-async def get_dataset(
-    dataset_id: int,
-    db: DatabaseClient = Depends(_get_db),
-) -> DatasetDetail:
-    with db.session() as sess:
-        ds = _get_dataset_or_404(sess, dataset_id)
-        return DatasetDetail(
-            id=ds.id,
-            name=ds.name,
-            location=ds.location,
-            date_start=str(ds.date_start),
-            date_end=str(ds.date_end),
-            required_tiers=ds.required_tiers,
-            quality_settings=ds.quality_settings,
-            status=ds.status,
-            created_at=str(ds.created_at),
-        )
+@router.get("/{dataset_id}", response_model=DatasetDetail, summary="Detail dataset")
+async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetDetail:
+    result = _mgr(db).get_dataset(dataset_id)
+    if result is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+    return DatasetDetail(**result)
 
 
-@router.post(
-    "/{dataset_id}/pause",
-    summary="Pause dataset processing",
-)
+@router.get("/{dataset_id}/status", response_model=DatasetProgressResponse, summary="Progres pipeline dataset")
+async def get_dataset_status(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetProgressResponse:
+    result = _mgr(db).get_progress(dataset_id)
+    if result is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+    return DatasetProgressResponse(**result)
+
+
+@router.post("/{dataset_id}/pause", response_model=DatasetPauseResponse, summary="Pause dataset")
 async def pause_dataset(
     dataset_id: int,
+    req: DatasetPauseRequest = DatasetPauseRequest(),
     db: DatabaseClient = Depends(_get_db),
-) -> dict:
-    with db.session() as sess:
-        ds = _get_dataset_or_404(sess, dataset_id)
-        ds.status = "PAUSED"
-        return {"dataset_id": dataset_id, "status": ds.status}
+) -> DatasetPauseResponse:
+    try:
+        result = _mgr(db).pause_dataset(dataset_id, reason=req.reason)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return DatasetPauseResponse(**result)
 
 
-@router.post(
-    "/{dataset_id}/resume",
-    summary="Resume dataset processing",
-)
-async def resume_dataset(
-    dataset_id: int,
-    db: DatabaseClient = Depends(_get_db),
-) -> dict:
-    with db.session() as sess:
-        ds = _get_dataset_or_404(sess, dataset_id)
-        ds.status = "PROCESSING"
-        return {"dataset_id": dataset_id, "status": ds.status}
+@router.post("/{dataset_id}/resume", response_model=DatasetResumeResponse, summary="Resume dataset")
+async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetResumeResponse:
+    try:
+        result = _mgr(db).resume_dataset(dataset_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return DatasetResumeResponse(**result)
 
 
-@router.delete(
-    "/{dataset_id}",
-    summary="Delete a dataset",
-    description="Deletes the dataset along with its dataset_products and dataset_scenes rows.",
-)
+@router.delete("/{dataset_id}", response_model=DatasetDeleteResponse, summary="Hapus dataset")
 async def delete_dataset(
     dataset_id: int,
+    force: bool = Query(False, description="Paksa hentikan proses yang sedang berjalan lalu hapus"),
     db: DatabaseClient = Depends(_get_db),
-) -> dict:
-    with db.session() as sess:
-        ds = _get_dataset_or_404(sess, dataset_id)
-        sess.query(DatasetProduct).filter(DatasetProduct.dataset_id == dataset_id).delete()
-        sess.query(DatasetScene).filter(DatasetScene.dataset_id == dataset_id).delete()
-        sess.delete(ds)
-        return {"deleted": True, "dataset_id": dataset_id}
+) -> DatasetDeleteResponse:
+    try:
+        result = _mgr(db).delete_dataset(dataset_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return DatasetDeleteResponse(**result)
 
 
-@router.get(
-    "/{dataset_id}/status",
-    response_model=DatasetStatusResponse,
-    summary="Get dataset scene-level progress",
-)
-async def get_dataset_status(
-    dataset_id: int,
-    db: DatabaseClient = Depends(_get_db),
-) -> DatasetStatusResponse:
-    with db.session() as sess:
-        ds = _get_dataset_or_404(sess, dataset_id)
-        total = sess.query(DatasetScene).filter(DatasetScene.dataset_id == dataset_id).count()
-        completed = sess.query(DatasetScene).filter(
-            DatasetScene.dataset_id == dataset_id, DatasetScene.status == "COMPLETED"
-        ).count()
-        failed = sess.query(DatasetScene).filter(
-            DatasetScene.dataset_id == dataset_id, DatasetScene.status == "FAILED"
-        ).count()
-        return DatasetStatusResponse(
-            dataset_id=dataset_id,
-            status=ds.status,
-            total_scenes=total,
-            completed=completed,
-            failed=failed,
-        )
+@router.get("/{dataset_id}/deletion-progress", response_model=DeletionProgressResponse, summary="Progres penghapusan")
+async def get_deletion_progress(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DeletionProgressResponse:
+    result = _mgr(db).get_deletion_progress(dataset_id)
+    if result is None:
+        raise HTTPException(404, "Tidak ada proses penghapusan untuk dataset ini")
+    return DeletionProgressResponse(**result)
 
 
-@router.get(
-    "/{dataset_id}/download",
-    summary="Download built dataset",
-    description="Not yet implemented — reserved for future zip export of dataset products.",
-)
-async def download_dataset(dataset_id: int) -> None:
-    raise HTTPException(status_code=501, detail="Download not yet implemented")
+@router.get("/{dataset_id}/download", summary="Unduh dataset (ZIP)")
+async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> FileResponse:
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    base_dir = Path("data") / "datasets" / str(dataset_id)
+    files = [f for f in base_dir.rglob("*") if f.is_file()] if base_dir.exists() else []
+    if not files:
+        raise HTTPException(404, "Dataset belum memiliki file untuk diunduh")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, arcname=str(f.relative_to(base_dir)))
+
+    filename = f"{_slugify(info['name'])}.zip"
+    return FileResponse(
+        tmp.name,
+        filename=filename,
+        media_type="application/zip",
+        background=BackgroundTask(os.remove, tmp.name),
+    )

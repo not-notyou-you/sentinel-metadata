@@ -1,14 +1,4 @@
--- database/seed_data.sql
--- Sample SQL seed data for testing the pipeline schema.
--- Run AFTER schema.sql has been applied.
--- For Python-based seed with full pipeline flow, use: python -m etl.seed_data
---
--- Author : Julius Marselinus (BRONTO) - NIM 00000111989
--- Program: Sistem Informasi - Universitas Multimedia Nusantara
 
--- ---------------------------------------------------------------------------
--- 1. Region of Interest: Jabodetabek
--- ---------------------------------------------------------------------------
 INSERT INTO regions_of_interest
     (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active)
 VALUES (
