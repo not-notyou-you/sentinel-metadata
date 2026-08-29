@@ -11,6 +11,11 @@ import rasterio
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 from scipy.interpolate import RegularGridInterpolator
 
+# CRS lookups below (calculate_default_transform/reproject to EPSG:4326) hit
+# rasterio's PROJ database. If you see "Cannot find proj.db" / "unknown EPSG
+# code" here, it's a conflicting PROJ_LIB/PROJ_DATA/GDAL_DATA env var — see
+# the fix and full explanation in etl/__init__.py.
+
 logger = logging.getLogger(__name__)
 
 

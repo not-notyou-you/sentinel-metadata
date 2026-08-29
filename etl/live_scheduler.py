@@ -20,6 +20,7 @@ from etl.module1_download import discover_scenes
 from etl.module5_orchestrator import run_dataset_job
 from etl.module7_modis_download import download_modis_scene
 from etl.module8_gpm_download import download_gpm_scene
+from etl.pipeline_logger import PipelineLogger
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class LiveScheduler:
     def __init__(self, db: DatabaseClient) -> None:
         self._db = db
         self._dsmgr = DatasetManager(db)
+        self._plog = PipelineLogger(db)
         self._scheduler = None
 
     def start(self) -> None:
@@ -155,25 +157,10 @@ class LiveScheduler:
         job_id = self._create_live_job(live["dataset_id"], since.date(), date_to.date(), "LIVE_INGEST")
         run_dataset_job(self._db, job_id)
         self._update_source_check("SENTINEL1", last_ingest=_now())
-        self._build_fusion_stacks(live, scenes)
+        # Fusion (GOLD tier) is now built per-scene inside run_dataset_job's
+        # own FUSION stage (etl/module5_orchestrator.py) for every dataset,
+        # LIVE included — no separate post-ingest fusion pass needed here.
         return True
-
-    def _build_fusion_stacks(self, live: dict, scenes: list[dict]) -> None:
-        from etl.module9_fusion import create_fusion_stack
-
-        aoi_bbox = self._bbox_tuple(live["bbox_wkt"])
-        for scene in scenes:
-            s1_date = scene["acquisition_datetime"].date()
-            try:
-                fusion_id = create_fusion_stack(
-                    dataset_id=live["dataset_id"],
-                    s1_date=s1_date,
-                    aoi_bbox=aoi_bbox,
-                    db=self._db,
-                )
-                logger.info("[LIVE] Fusion stack dibuat fusion_id=%d tanggal=%s", fusion_id, s1_date)
-            except Exception:
-                logger.exception("[LIVE] Fusion stack gagal untuk tanggal=%s", s1_date)
 
     def _check_and_ingest_modis(self, live: dict, source: dict) -> bool:
         dataset_id = live["dataset_id"]
@@ -184,7 +171,7 @@ class LiveScheduler:
         self._update_source_check("MODIS", last_check=_now())
 
         try:
-            _product_id, metadata = download_modis_scene(dataset_id, since, today, bbox_tuple)
+            _product_id, metadata = download_modis_scene(dataset_id, since, today, bbox_tuple, plog=self._plog)
         except NotImplementedError:
             logger.info("[LIVE] MODIS: download belum diimplementasikan, skip")
             return False
@@ -216,7 +203,7 @@ class LiveScheduler:
                     scene_id=scene_id,
                     job_id=processing_job_id,
                     dataset_id=dataset_id,
-                    product_tier="GOLD",
+                    product_tier="SILVER",
                     product_type="MODIS_FLOOD",
                     band_name="FLOOD",
                     file_path=flood_tif,
@@ -249,7 +236,7 @@ class LiveScheduler:
         bbox_tuple = self._bbox_tuple(live["bbox_wkt"])
 
         try:
-            _product_ids, metadata = download_gpm_scene(dataset_id, today, bbox_tuple)
+            _product_ids, metadata = download_gpm_scene(dataset_id, today, bbox_tuple, plog=self._plog)
         except NotImplementedError:
             logger.info("[LIVE] GPM: download belum diimplementasikan, skip")
             return False
@@ -280,7 +267,7 @@ class LiveScheduler:
                     scene_id=scene_id,
                     job_id=processing_job_id,
                     dataset_id=dataset_id,
-                    product_tier="GOLD",
+                    product_tier="SILVER",
                     product_type="GPM_RAINFALL",
                     band_name=f"RAIN_{window_name.upper()}",
                     file_path=tif_path,

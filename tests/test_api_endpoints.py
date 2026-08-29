@@ -168,13 +168,13 @@ class TestProductsEndpoints:
 
     def test_get_product_by_id(self, api_client, seeded):
         """GET /api/products/{id} returns 200 with product detail."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp = api_client.get(f"/api/products/{prod_id}")
         assert resp.status_code == 200
         body = resp.json()
         assert body["product_id"]   == prod_id
         assert body["product_tier"] == "GOLD"
-        assert body["band_name"]    == "VV"
+        assert body["band_name"]    == "FUSION"
         assert "data_hash_sha256"   in body
         assert "file_path"          in body
 
@@ -185,14 +185,14 @@ class TestProductsEndpoints:
 
     def test_download_product_missing_file(self, api_client, seeded):
         """Download endpoint returns 404 if file not on disk (expected in test env)."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp = api_client.get(f"/api/products/{prod_id}/download")
         # File won't exist in test env — expect 404
         assert resp.status_code in (200, 404)
 
     def test_verify_product_missing_file(self, api_client, seeded):
         """Verify endpoint returns 404 if file not on disk."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp = api_client.get(f"/api/products/{prod_id}/verify")
         assert resp.status_code in (200, 404)
 
@@ -257,7 +257,7 @@ class TestLineageEndpoints:
 
     def test_get_lineage_ancestors_200(self, api_client, seeded):
         """GET /api/metadata/lineage/{product_id} returns 200."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp    = api_client.get(f"/api/metadata/lineage/{prod_id}")
         assert resp.status_code == 200
         body = resp.json()
@@ -268,20 +268,20 @@ class TestLineageEndpoints:
 
     def test_lineage_chain_has_steps(self, api_client, seeded):
         """GOLD product lineage must have at least 2 ancestor steps."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp    = api_client.get(f"/api/metadata/lineage/{prod_id}?direction=ancestors")
         body    = resp.json()
         assert body["total_steps"] >= 2
 
     def test_lineage_transformation_types(self, api_client, seeded):
-        """Lineage chain must include CROP, LEE_FILTER, COG_EXPORT steps."""
-        prod_id = seeded["gold_vv_id"]
+        """Lineage chain must include CROP, LEE_FILTER, FUSION steps."""
+        prod_id = seeded["gold_fusion_id"]
         resp    = api_client.get(f"/api/metadata/lineage/{prod_id}?direction=ancestors")
         chain   = resp.json()["chain"]
         types   = {step["transformation_type"] for step in chain}
         assert "CROP"       in types
         assert "LEE_FILTER" in types
-        assert "COG_EXPORT" in types
+        assert "FUSION"     in types
 
     def test_lineage_descendants_direction(self, api_client, seeded):
         """direction=descendants is accepted and returns valid response."""
@@ -292,7 +292,7 @@ class TestLineageEndpoints:
 
     def test_lineage_invalid_direction(self, api_client, seeded):
         """Invalid direction parameter returns 422."""
-        prod_id = seeded["gold_vv_id"]
+        prod_id = seeded["gold_fusion_id"]
         resp    = api_client.get(f"/api/metadata/lineage/{prod_id}?direction=invalid")
         assert resp.status_code == 422
 

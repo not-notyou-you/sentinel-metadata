@@ -1,20 +1,24 @@
 # etl/migrate_data_structure.py
 """
-Migrasi struktur folder data/datasets/{dataset_id}/... dari layout lama
-({tier}/{slug}/*.tif) ke layout baru ({acquisition_date_YYYYMMDD}/{tier}/*.tif).
+Migrasi struktur folder data/datasets/... dari layout tanggal-dulu
+({dataset_id}/{acquisition_date_YYYYMMDD}/{tier}/*.tif) ke layout
+tier-dulu-per-nama-dataset ({dataset_id}_{slug_nama}/{tier}/{scene}/*.tif).
 
-Sumber kebenaran untuk tanggal akuisisi tiap file adalah kolom
-satellite_scenes.acquisition_datetime di database (dihubungkan lewat
-data_products.scene_id), bukan nama file atau nama folder lama — supaya
-migrasi tetap benar walau slug lama tidak mengandung tanggal yang bisa
-diparse dengan aman.
+`{scene}` untuk produk Sentinel-1 (RAW_EXTRACTED_TIFF, CROPPED_TIFF,
+LEE_FILTERED) adalah product_identifier scene tsb, diambil dari
+satellite_scenes lewat data_products.scene_id -- bukan diparse dari nama
+folder lama. Untuk artefak yang bukan milik satu scene S1 tertentu
+(MODIS_FLOOD/GPM_RAINFALL input fusion, dan FUSION_H5 output GOLD),
+`{scene}` adalah folder tanggal YYYYMMDD yang sudah ada di layout lama
+(satu level di atas folder tier) -- konsisten dengan cara
+module7/module8/module9 menamai scene aux di layout baru.
 
-Setiap dataset di-backup (copy penuh) ke backup/data_structure_migration/
-sebelum file mana pun dipindah. Setelah dipindah, checksum SHA-256 file di
-lokasi baru dibandingkan dengan data_products.data_hash_sha256 (atau dihitung
-ulang dari file lama kalau kolom itu kosong) — kalau tidak cocok, file
-dikembalikan ke lokasi lama dan product itu dilaporkan gagal, tidak pernah
-didiamkan begitu saja.
+Setiap dataset di-backup penuh ke backup/data_structure_migration/
+sebelum satu file pun dipindah. Setelah `shutil.move`, checksum SHA-256
+file di lokasi baru dibandingkan dengan data_products.data_hash_sha256
+(atau dihitung ulang dari file lama kalau kolom itu kosong) -- kalau tidak
+cocok, file dikembalikan ke lokasi lama dan product itu dilaporkan gagal,
+tidak pernah didiamkan begitu saja.
 
 Usage:
     python -m etl.migrate_data_structure                 # migrasi semua dataset
@@ -26,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import logging
 import shutil
 import sys
@@ -41,6 +46,10 @@ logger = logging.getLogger("migrate_data_structure")
 
 BACKUP_ROOT = Path("backup") / "data_structure_migration"
 LOG_DIR = Path("logs_pipeline")
+
+# product_type yang bukan milik satu scene Sentinel-1 tertentu -- kunci
+# scene-nya diturunkan dari folder tanggal lama, bukan product_identifier.
+_AUX_PRODUCT_TYPES = {"MODIS_FLOOD", "GPM_RAINFALL", "FUSION_H5"}
 
 
 def _configure_logging() -> None:
@@ -63,8 +72,13 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _old_dataset_root(dataset_id: int) -> Path:
+    """Layout lama: data/datasets/{dataset_id}/ (tanpa slug nama)."""
+    return fm.DATA_ROOT / str(dataset_id)
+
+
 def _backup_dataset(dataset_id: int) -> Path | None:
-    src = fm.get_dataset_root(dataset_id)
+    src = _old_dataset_root(dataset_id)
     if not src.exists() or not any(src.rglob("*")):
         return None
     dest = BACKUP_ROOT / f"dataset_{dataset_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -73,10 +87,10 @@ def _backup_dataset(dataset_id: int) -> Path | None:
     return dest
 
 
-def _products_with_acquisition_date(db: DatabaseClient, dataset_id: int) -> list[dict]:
+def _products_with_scene_info(db: DatabaseClient, dataset_id: int) -> list[dict]:
     with db.session() as sess:
         rows = sess.execute(
-            select(DataProduct, SatelliteScene.acquisition_datetime)
+            select(DataProduct, SatelliteScene.product_identifier)
             .join(SatelliteScene, SatelliteScene.scene_id == DataProduct.scene_id)
             .where(DataProduct.dataset_id == dataset_id)
         ).all()
@@ -84,19 +98,96 @@ def _products_with_acquisition_date(db: DatabaseClient, dataset_id: int) -> list
             {
                 "product_id": p.product_id,
                 "product_tier": p.product_tier.value if hasattr(p.product_tier, "value") else str(p.product_tier),
+                "product_type": p.product_type,
                 "file_path": p.file_path,
                 "file_name": p.file_name,
                 "data_hash_sha256": p.data_hash_sha256,
-                "acquisition_datetime": acq_dt,
+                "product_identifier": pid,
             }
-            for p, acq_dt in rows
+            for p, pid in rows
         ]
 
 
+def _move_untracked(src: Path, dst: Path, dry_run: bool) -> str:
+    """Pindahkan satu file yang tidak tercatat di data_products. Return
+    'moved', 'skipped', atau 'failed'."""
+    if src.as_posix() == dst.as_posix() or not src.exists():
+        return "skipped"
+    if dry_run:
+        logger.info("[DRY-RUN] (untracked) %s -> %s", src, dst)
+        return "moved"
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            dst.unlink()
+        shutil.move(str(src), str(dst))
+        logger.info("[MIGRATE] (untracked) %s -> %s", src, dst)
+        return "moved"
+    except Exception:
+        logger.exception("[MIGRATE] gagal pindah file untracked %s", src)
+        return "failed"
+
+
+def _migrate_untracked_files(dataset_id: int, dataset_name: str, old_root: Path, dry_run: bool) -> dict:
+    """File yang tidak tercatat sebagai data_products tapi tetap perlu
+    dipindah: arsip .zip SAFE mentah (raw/), sidecar metadata_qa.json
+    (silver/, berisi product_identifier pemiliknya), dan sidecar
+    fusion_metadata.json (gold/, milik scene tanggal itu sendiri)."""
+    counts = {"moved": 0, "skipped": 0, "failed": 0}
+    if not old_root.exists():
+        return counts
+
+    date_dirs = sorted(d for d in old_root.iterdir() if d.is_dir() and len(d.name) == 8 and d.name.isdigit())
+    for date_dir in date_dirs:
+        raw_dir = date_dir / "raw"
+        if raw_dir.exists():
+            for zip_path in raw_dir.glob("*.zip"):
+                scene_key = zip_path.stem  # "{product_identifier}.SAFE.zip" -> "{product_identifier}.SAFE"
+                new_dir = fm.get_scene_dir(dataset_id, dataset_name, "raw", scene_key)
+                counts[_move_untracked(zip_path, new_dir / zip_path.name, dry_run)] += 1
+
+        silver_qa = date_dir / "silver" / "metadata_qa.json"
+        if silver_qa.exists():
+            try:
+                scene_key = json.loads(silver_qa.read_text())["product_identifier"]
+                new_dir = fm.get_scene_dir(dataset_id, dataset_name, "silver", scene_key)
+                counts[_move_untracked(silver_qa, new_dir / silver_qa.name, dry_run)] += 1
+            except Exception:
+                logger.exception("[MIGRATE] gagal baca metadata_qa.json: %s", silver_qa)
+                counts["failed"] += 1
+
+        gold_meta = date_dir / "gold" / "fusion_metadata.json"
+        if gold_meta.exists():
+            new_dir = fm.get_scene_dir(dataset_id, dataset_name, "gold", date_dir.name)
+            counts[_move_untracked(gold_meta, new_dir / gold_meta.name, dry_run)] += 1
+
+    return counts
+
+
+def _scene_key_for(row: dict, old_path: Path) -> str:
+    """Kunci scene di layout baru: product_identifier S1 asli untuk produk
+    S1 (RAW/BRONZE/SILVER LEE_FILTERED), atau folder tanggal lama -- satu
+    level di atas folder tier di layout lama -- untuk artefak fusion yang
+    bukan milik satu scene S1 tertentu (MODIS_FLOOD, GPM_RAINFALL, FUSION_H5)."""
+    if row["product_type"] in _AUX_PRODUCT_TYPES:
+        return old_path.parent.parent.name
+    return row["product_identifier"]
+
+
 def migrate_dataset(db: DatabaseClient, dataset_id: int, dry_run: bool = False) -> dict:
-    products = _products_with_acquisition_date(db, dataset_id)
-    if not products:
-        logger.info("[MIGRATE] dataset_id=%d tidak punya data_products, dilewati", dataset_id)
+    with db.session() as sess:
+        dataset = sess.get(Dataset, dataset_id)
+        if dataset is None:
+            logger.warning("[MIGRATE] dataset_id=%d tidak ditemukan di database, dilewati", dataset_id)
+            return {"dataset_id": dataset_id, "moved": 0, "skipped": 0, "failed": 0}
+        dataset_name = dataset.name
+
+    old_root = _old_dataset_root(dataset_id)
+    new_root = fm.get_dataset_root(dataset_id, dataset_name)
+
+    products = _products_with_scene_info(db, dataset_id)
+    if not products and not old_root.exists():
+        logger.info("[MIGRATE] dataset_id=%d tidak punya data di disk, dilewati", dataset_id)
         return {"dataset_id": dataset_id, "moved": 0, "skipped": 0, "failed": 0}
 
     if not dry_run:
@@ -106,11 +197,20 @@ def migrate_dataset(db: DatabaseClient, dataset_id: int, dry_run: bool = False) 
     with db.session() as sess:
         for row in products:
             old_path = Path(row["file_path"])
+            if old_path.is_relative_to(new_root):
+                # Sudah dimigrasi di run sebelumnya -- jangan hitung ulang
+                # scene_key dari old_path (untuk tier aux, itu diturunkan
+                # dari posisi folder tanggal di layout LAMA, yang tidak lagi
+                # berlaku begitu file sudah pindah ke layout baru).
+                skipped += 1
+                continue
+
             tier = row["product_tier"].lower()
-            new_dir = fm.get_dataset_path(dataset_id, row["acquisition_datetime"], tier)
+            scene_key = _scene_key_for(row, old_path)
+            new_dir = fm.get_scene_dir(dataset_id, dataset_name, tier, scene_key)
             new_path = new_dir / row["file_name"]
 
-            if Path(old_path).as_posix() == new_path.as_posix():
+            if old_path.as_posix() == new_path.as_posix():
                 skipped += 1
                 continue
             if not old_path.exists():
@@ -154,9 +254,33 @@ def migrate_dataset(db: DatabaseClient, dataset_id: int, dry_run: bool = False) 
                 )
                 failed += 1
 
-    # Folder tier/slug lama yang sudah kosong tidak dibutuhkan lagi di layout baru.
+    untracked_counts = _migrate_untracked_files(dataset_id, dataset_name, old_root, dry_run)
+    moved += untracked_counts["moved"]
+    skipped += untracked_counts["skipped"]
+    failed += untracked_counts["failed"]
+
     if not dry_run:
-        _remove_empty_dirs(fm.get_dataset_root(dataset_id))
+        # Cache granule mentah MODIS/GPM (file .hdf/.nc4 sebelum mosaic/crop)
+        # tidak tercatat sebagai data_products -- dipindah langsung sebagai folder.
+        for source in ("modis", "gpm"):
+            old_aux = old_root / "raw" / source
+            if old_aux.exists():
+                new_aux = fm.get_aux_raw_dir(dataset_id, dataset_name, source)
+                new_aux.parent.mkdir(parents=True, exist_ok=True)
+                if new_aux.exists():
+                    shutil.rmtree(new_aux)
+                shutil.move(str(old_aux), str(new_aux))
+                logger.info("[MIGRATE] aux cache dataset_id=%d %s -> %s", dataset_id, old_aux, new_aux)
+
+        old_meta = old_root / "metadata.json"
+        if old_meta.exists():
+            new_meta = fm.get_dataset_metadata_path(dataset_id, dataset_name)
+            new_meta.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_meta), str(new_meta))
+
+        _remove_empty_dirs(old_root)
+        if old_root.exists() and old_root != new_root and not any(old_root.rglob("*")):
+            old_root.rmdir()
 
     logger.info(
         "[MIGRATE] dataset_id=%d selesai: moved=%d skipped=%d failed=%d",
@@ -183,7 +307,10 @@ def _all_dataset_ids(db: DatabaseClient) -> list[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Migrasi data/datasets/{id}/{tier}/{slug}/ ke data/datasets/{id}/{tanggal}/{tier}/"
+        description=(
+            "Migrasi data/datasets/{id}/{tanggal}/{tier}/ ke "
+            "data/datasets/{id}_{slug_nama}/{tier}/{scene}/"
+        )
     )
     parser.add_argument("--dataset-id", type=int, default=None, help="Migrasi satu dataset saja")
     parser.add_argument("--dry-run", action="store_true", help="Tampilkan rencana tanpa memindahkan file")

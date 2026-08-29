@@ -16,10 +16,11 @@ def _now() -> datetime:
 
 
 class DeletionManager:
-    def __init__(self, db: DatabaseClient, dataset_id: int) -> None:
+    def __init__(self, db: DatabaseClient, dataset_id: int, dataset_name: str) -> None:
         self._db = db
         self._dataset_id = dataset_id
-        self._base_dir = fm.get_dataset_root(dataset_id)
+        self._dataset_name = dataset_name
+        self._base_dir = fm.get_dataset_root(dataset_id, dataset_name)
         self._manifest_path = self._base_dir / ".deletion_manifest.json"
         self._last_op_id: int | None = None
 
@@ -78,16 +79,15 @@ class DeletionManager:
 
         deleted_count = 0
         freed_bytes = 0
-        for acq_date in fm.list_acquisition_dates(self._dataset_id):
-            for tier in tiers_lower:
-                for f in fm.get_tier_files(self._dataset_id, acq_date, tier):
-                    try:
-                        size = f.stat().st_size
-                        f.unlink()
-                        deleted_count += 1
-                        freed_bytes += size
-                    except OSError as exc:
-                        logger.error("[TIER_CLEANUP] gagal hapus %s: %s", f, exc)
+        for tier in tiers_lower:
+            for f in fm.get_tier_files(self._dataset_id, self._dataset_name, tier):
+                try:
+                    size = f.stat().st_size
+                    f.unlink()
+                    deleted_count += 1
+                    freed_bytes += size
+                except OSError as exc:
+                    logger.error("[TIER_CLEANUP] gagal hapus %s: %s", f, exc)
 
         self._remove_empty_dirs()
 

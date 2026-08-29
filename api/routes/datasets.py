@@ -2,7 +2,6 @@
 from __future__ import annotations
 import logging
 import os
-import re
 import tempfile
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,7 +15,7 @@ from api.schemas import (
     DatasetDeleteResponse,
     DatasetDetail,
     DatasetListResponse,
-    DatasetLogEntry,
+    DatasetLogsResponse,
     DatasetPauseRequest,
     DatasetPauseResponse,
     DatasetProgressResponse,
@@ -26,12 +25,13 @@ from api.schemas import (
 from etl import folder_manager as fm
 from etl.database_client import DatabaseClient
 from etl.dataset_manager import DatasetManager
+from etl.pipeline_logger import PipelineLogManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _get_db() -> DatabaseClient:
+async def _get_db() -> DatabaseClient:
     from api.main import get_db
     return get_db()
 
@@ -41,7 +41,7 @@ def _mgr(db: DatabaseClient) -> DatasetManager:
 
 
 def _slugify(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]", "_", name.strip()) or "dataset"
+    return fm.slugify(name)
 
 
 @router.post("", response_model=DatasetCreateResponse, summary="Buat dataset baru")
@@ -125,17 +125,22 @@ async def cancel_dataset(
     return DatasetCancelResponse(**result)
 
 
-@router.get("/{dataset_id}/logs", response_model=list[DatasetLogEntry], summary="Log aktivitas terbaru per scene")
+@router.get("/{dataset_id}/logs", response_model=DatasetLogsResponse, summary="Log pipeline terstruktur per stage")
 async def get_dataset_logs(
     dataset_id: int,
-    limit: int = Query(5, ge=1, le=100),
+    stage: str | None = Query(None, description="Filter stage, mis. DOWNLOAD, CROP, FUSION"),
+    status: str | None = Query(None, description="Filter status: STARTED, RUNNING, COMPLETED, FAILED"),
+    scene_id: str | None = Query(None, description="Filter product_identifier scene"),
+    limit: int = Query(50, ge=1, le=1000),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     db: DatabaseClient = Depends(_get_db),
-) -> list[DatasetLogEntry]:
+) -> DatasetLogsResponse:
     if _mgr(db).get_dataset(dataset_id) is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
-    entries = _mgr(db).get_recent_logs(dataset_id, limit=limit, order=order)
-    return [DatasetLogEntry(**e) for e in entries]
+    logs, total = PipelineLogManager(db).query_logs(
+        dataset_id, stage=stage, status=status, scene_id=scene_id, limit=limit, order=order,
+    )
+    return DatasetLogsResponse(total=total, limit=limit, logs=logs)
 
 
 @router.delete("/{dataset_id}", response_model=DatasetDeleteResponse, summary="Hapus dataset")
@@ -165,7 +170,7 @@ async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
-    base_dir = fm.get_dataset_root(dataset_id)
+    base_dir = fm.get_dataset_root(dataset_id, info["name"])
     files = [f for f in base_dir.rglob("*") if f.is_file()] if base_dir.exists() else []
     if not files:
         raise HTTPException(404, "Dataset belum memiliki file untuk diunduh")
@@ -187,24 +192,24 @@ async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db
 
 @router.get("/{dataset_id}/storage/summary", summary="Ringkasan storage per tier untuk dataset ini")
 async def get_dataset_storage_summary(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> dict:
-    if _mgr(db).get_dataset(dataset_id) is None:
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
-    dates = fm.list_acquisition_dates(dataset_id)
-    tiers: dict[str, dict] = {tier: {"file_count": 0, "size_bytes": 0} for tier in fm.TIERS}
-    for acq_date in dates:
-        for tier in fm.TIERS:
-            for f in fm.get_tier_files(dataset_id, acq_date, tier):
-                tiers[tier]["file_count"] += 1
-                tiers[tier]["size_bytes"] += f.stat().st_size
-
-    for stats in tiers.values():
-        stats["size_mb"] = round(stats["size_bytes"] / (1024 ** 2), 3)
+    tiers: dict[str, dict] = {}
+    for tier in fm.TIERS:
+        files = fm.get_tier_files(dataset_id, info["name"], tier)
+        size_bytes = sum(f.stat().st_size for f in files)
+        tiers[tier] = {
+            "file_count": len(files),
+            "size_bytes": size_bytes,
+            "size_mb": round(size_bytes / (1024 ** 2), 3),
+            "scene_count": len(fm.list_scenes(dataset_id, info["name"], tier)),
+        }
 
     total_bytes = sum(t["size_bytes"] for t in tiers.values())
     return {
         "dataset_id": dataset_id,
-        "acquisition_dates": dates,
         "tiers": tiers,
         "total_size_bytes": total_bytes,
         "total_size_mb": round(total_bytes / (1024 ** 2), 3),
@@ -215,23 +220,24 @@ async def get_dataset_storage_summary(dataset_id: int, db: DatabaseClient = Depe
 async def list_dataset_tier_files(
     dataset_id: int,
     tier: str,
-    acquisition_date: str | None = Query(None, description="Filter tanggal YYYYMMDD, kosongkan untuk semua tanggal"),
+    scene: str | None = Query(None, description="Filter nama scene, kosongkan untuk semua scene"),
     db: DatabaseClient = Depends(_get_db),
 ) -> dict:
-    if _mgr(db).get_dataset(dataset_id) is None:
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
     if tier.lower() not in fm.TIERS:
         raise HTTPException(400, f"Tier tidak valid: {tier}. Valid: {fm.TIERS}")
 
-    dates = [acquisition_date] if acquisition_date else fm.list_acquisition_dates(dataset_id)
+    scenes = [scene] if scene else fm.list_scenes(dataset_id, info["name"], tier)
     result = []
-    for d in dates:
-        files = fm.get_tier_files(dataset_id, d, tier)
+    for s in scenes:
+        files = fm.get_scene_files(dataset_id, info["name"], tier, s)
         result.append({
-            "acquisition_date": d,
+            "scene": s,
             "files": [
                 {"name": f.name, "path": str(f), "size_mb": round(f.stat().st_size / (1024 ** 2), 3)}
                 for f in files
             ],
         })
-    return {"dataset_id": dataset_id, "tier": tier.lower(), "dates": result}
+    return {"dataset_id": dataset_id, "tier": tier.lower(), "scenes": result}

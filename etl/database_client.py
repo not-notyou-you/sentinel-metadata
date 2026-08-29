@@ -641,6 +641,25 @@ class CleanupOperation(Base):
         return f"<CleanupOperation id={self.id} dataset={self.dataset_id} type={self.operation_type} status={self.status}>"
 
 
+class ProcessingLog(Base):
+    __tablename__ = "processing_logs"
+    log_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    log_uuid = Column(UUID(as_uuid=True), nullable=False, unique=True,
+                       server_default=text("uuid_generate_v4()"))
+    dataset_id = Column(Integer, ForeignKey("datasets.dataset_id", ondelete="CASCADE"), nullable=False)
+    scene_id = Column(String(255), nullable=False)
+    module = Column(String(50), nullable=False)
+    stage = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    message = Column(Text, nullable=False)
+    details = Column(JSONB, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    def __repr__(self) -> str:
+        return (f"<ProcessingLog id={self.log_id} dataset={self.dataset_id} scene={self.scene_id} "
+                f"stage={self.stage} status={self.status}>")
+
+
 class LiveDatasetSource(Base):
     __tablename__ = "live_dataset_sources"
     id = Column(Integer, primary_key=True, autoincrement=True)

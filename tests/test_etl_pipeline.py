@@ -39,9 +39,8 @@ class TestEndToEndFlow:
         ids = seed(db_client)
         verify_seed(db_client, ids)
 
-        assert ids["scene_id"]    > 0
-        assert ids["gold_vv_id"]  > 0
-        assert ids["gold_vh_id"]  > 0
+        assert ids["scene_id"]      > 0
+        assert ids["gold_fusion_id"] > 0
         assert ids["vv_metric_id"] > 0
         assert ids["vh_metric_id"] > 0
 
@@ -67,7 +66,8 @@ class TestEndToEndFlow:
         assert success == 5, f"Expected 5 successful stages, got {success}"
 
     def test_pipeline_product_tiers(self, db_client, sample_region):
-        """After pipeline, each band must have RAW, BRONZE, SILVER, GOLD products."""
+        """After pipeline, each band must have RAW, BRONZE, SILVER products,
+        and GOLD must have the single fused H5 product (band_name=FUSION)."""
         from etl.seed_data import seed
         from etl.metadata_manager import MetadataManager
 
@@ -75,7 +75,7 @@ class TestEndToEndFlow:
         meta = MetadataManager(db_client)
 
         for band in ["VV", "VH"]:
-            for tier in ["RAW", "BRONZE", "SILVER", "GOLD"]:
+            for tier in ["RAW", "BRONZE", "SILVER"]:
                 products = meta.get_products_by_scene(
                     ids["scene_id"], tier=tier, latest_only=True
                 )
@@ -83,6 +83,10 @@ class TestEndToEndFlow:
                 assert len(band_products) >= 1, (
                     f"Missing {tier} product for band={band}"
                 )
+
+        gold_products = meta.get_products_by_scene(ids["scene_id"], tier="GOLD", latest_only=True)
+        assert len(gold_products) == 1, "GOLD should have exactly 1 fused product, not per-band"
+        assert gold_products[0]["band_name"] == "FUSION"
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +98,7 @@ class TestMetadataTracking:
 
     def test_scene_to_jobs_link(self, db_client, meta, sample_scene):
         """Each pipeline stage creates exactly one job linked to the scene."""
-        stages = ["DOWNLOAD", "CROP", "LEE_FILTER", "COG_EXPORT", "QUALITY_ANALYTICS"]
+        stages = ["DOWNLOAD", "CROP", "LEE_FILTER", "QUALITY_ANALYTICS", "FUSION"]
         for stage in stages:
             job_id = meta.insert_processing_job(sample_scene, stage)
             meta.start_job(job_id)
@@ -108,20 +112,20 @@ class TestMetadataTracking:
 
     def test_product_linked_to_job(self, db_client, meta, sample_scene):
         """Data products must be linked to the producing job."""
-        job_id = meta.insert_processing_job(sample_scene, "COG_EXPORT")
+        job_id = meta.insert_processing_job(sample_scene, "FUSION")
         meta.start_job(job_id)
 
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
-            band_name="VV", file_path="/tmp/test_vv.tif", file_name="test_vv.tif",
-            file_size_mb=40.0, data_hash_sha256=fake_hash("TRACK_VV"),
+            product_tier="GOLD", product_type="FUSION_H5",
+            band_name="FUSION", file_path="/tmp/test_fusion.h5", file_name="test_fusion.h5",
+            file_size_mb=40.0, data_hash_sha256=fake_hash("TRACK_FUSION"), file_format="HDF5",
         )
 
         products = meta.get_products_by_scene(sample_scene, tier="GOLD")
-        vv = next((p for p in products if p["band_name"] == "VV"), None)
-        assert vv is not None
-        assert vv["job_id"] == job_id
+        fusion = next((p for p in products if p["band_name"] == "FUSION"), None)
+        assert fusion is not None
+        assert fusion["job_id"] == job_id
 
     def test_quality_linked_to_product(self, db_client, meta, sample_scene):
         """Quality metrics must reference both scene and product."""
@@ -129,7 +133,7 @@ class TestMetadataTracking:
         meta.start_job(job_id)
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
+            product_tier="SILVER", product_type="LEE_FILTERED",
             band_name="VH", file_path="/tmp/vh.tif", file_name="vh.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("QUALITY_VH"),
         )
@@ -146,21 +150,21 @@ class TestMetadataTracking:
 
     def test_is_latest_flag_update(self, db_client, meta, sample_scene):
         """Inserting a new product for same scene/band/tier marks old one as not latest."""
-        job_id = meta.insert_processing_job(sample_scene, "COG_EXPORT")
+        job_id = meta.insert_processing_job(sample_scene, "FUSION")
 
         # First product
         pid1 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
-            band_name="VV", file_path="/tmp/v1.tif", file_name="v1.tif",
-            file_size_mb=40.0, data_hash_sha256=fake_hash("LATEST_V1"),
+            product_tier="GOLD", product_type="FUSION_H5",
+            band_name="FUSION", file_path="/tmp/f1.h5", file_name="f1.h5",
+            file_size_mb=40.0, data_hash_sha256=fake_hash("LATEST_V1"), file_format="HDF5",
         )
         # Second product (same tier+band → should mark pid1 as not latest)
         pid2 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
-            band_name="VV", file_path="/tmp/v2.tif", file_name="v2.tif",
-            file_size_mb=39.0, data_hash_sha256=fake_hash("LATEST_V2"),
+            product_tier="GOLD", product_type="FUSION_H5",
+            band_name="FUSION", file_path="/tmp/f2.h5", file_name="f2.h5",
+            file_size_mb=39.0, data_hash_sha256=fake_hash("LATEST_V2"), file_format="HDF5",
         )
 
         from etl.database_client import DataProduct
@@ -183,7 +187,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG", band_name="VV",
+            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/score_test.tif", file_name="score_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("SCORE_RANGE"),
         )
@@ -204,7 +208,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG", band_name="VH",
+            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VH",
             file_path="/tmp/flag_test.tif", file_name="flag_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("FLAG_TEST"),
         )
@@ -224,7 +228,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG", band_name="VV",
+            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/nodata_test.tif", file_name="nodata_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("NODATA_TEST"),
         )
@@ -249,10 +253,10 @@ class TestLineageTracking:
 
     def test_lineage_chain_recorded(self, db_client, lineage, meta, sample_scene):
         """Full pipeline lineage (RAW→BRONZE→SILVER→GOLD) must be queryable."""
-        dl_job   = meta.insert_processing_job(sample_scene, "DOWNLOAD")
-        crop_job = meta.insert_processing_job(sample_scene, "CROP")
-        lee_job  = meta.insert_processing_job(sample_scene, "LEE_FILTER")
-        cog_job  = meta.insert_processing_job(sample_scene, "COG_EXPORT")
+        dl_job     = meta.insert_processing_job(sample_scene, "DOWNLOAD")
+        crop_job   = meta.insert_processing_job(sample_scene, "CROP")
+        lee_job    = meta.insert_processing_job(sample_scene, "LEE_FILTER")
+        fusion_job = meta.insert_processing_job(sample_scene, "FUSION")
 
         raw_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=dl_job,
@@ -273,15 +277,15 @@ class TestLineageTracking:
             file_size_mb=45.0, data_hash_sha256=fake_hash("LIN_SILVER"),
         )
         gold_id = meta.insert_data_product(
-            scene_id=sample_scene, job_id=cog_job,
-            product_tier="GOLD",   product_type="COG", band_name="VV",
-            file_path="/tmp/gold.tif", file_name="gold.tif",
-            file_size_mb=41.0, data_hash_sha256=fake_hash("LIN_GOLD"),
+            scene_id=sample_scene, job_id=fusion_job,
+            product_tier="GOLD",   product_type="FUSION_H5", band_name="FUSION",
+            file_path="/tmp/gold.h5", file_name="gold.h5",
+            file_size_mb=41.0, data_hash_sha256=fake_hash("LIN_GOLD"), file_format="HDF5",
         )
 
         lineage.record_transformation(raw_id,    bronze_id, "CROP",       crop_job)
         lineage.record_transformation(bronze_id, silver_id, "LEE_FILTER", lee_job)
-        lineage.record_transformation(silver_id, gold_id,   "COG_EXPORT", cog_job)
+        lineage.record_transformation(silver_id, gold_id,   "FUSION",     fusion_job)
 
         # Trace ancestors of GOLD → should find 3 steps
         chain = lineage.get_lineage_chain(gold_id, direction="ancestors")
@@ -290,7 +294,7 @@ class TestLineageTracking:
         transform_types = {step["transformation_type"] for step in chain}
         assert "CROP"       in transform_types
         assert "LEE_FILTER" in transform_types
-        assert "COG_EXPORT" in transform_types
+        assert "FUSION"     in transform_types
 
     def test_descendants_chain(self, db_client, lineage, meta, sample_scene):
         """Descendants traversal from RAW should reach GOLD."""

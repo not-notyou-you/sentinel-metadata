@@ -30,10 +30,28 @@ def db_client():
     Session-scoped DatabaseClient connected to the test database.
     Creates all tables on setup, drops them on teardown.
     """
+    from sqlalchemy import text
     from etl.database_client import DatabaseClient, Base
 
     client = DatabaseClient(TEST_DB_URL, pool_size=2, max_overflow=2)
     client.create_tables()
+    # create_tables() only runs SQLAlchemy DDL (Base.metadata.create_all) — it
+    # doesn't run schema.sql's raw seed INSERTs, so processing_stages (needed
+    # by MetadataManager.insert_processing_job's FK lookup) starts empty on a
+    # fresh test DB. Seed the same stage rows schema.sql seeds in production.
+    with client.session() as sess:
+        sess.execute(text("""
+            INSERT INTO processing_stages (stage_name, stage_code, stage_order, description, timeout_minutes, retry_count, retry_delay_sec, is_mandatory, is_active)
+            VALUES
+                ('DOWNLOAD',          'DL',  1, 'Sentinel-1 scene discovery and download from Copernicus Hub', 120, 3, 60, TRUE, TRUE),
+                ('CROP',              'CR',  2, 'Spatial subsetting to Region of Interest bounding box',       30,  2, 30, TRUE, TRUE),
+                ('LEE_FILTER',        'LF',  3, 'SAR speckle reduction using Lee adaptive filter',            45,  2, 30, TRUE, TRUE),
+                ('COG_EXPORT',        'CE',  4, 'Cloud-Optimized GeoTIFF normalization and export',           30,  2, 30, TRUE, TRUE),
+                ('ORCHESTRATE',       'OR',  5, 'Pipeline orchestration, checkpointing, and retry management', 10,  1, 10, TRUE, TRUE),
+                ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30, TRUE, TRUE),
+                ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM) for GOLD tier', 60, 2, 30, TRUE, TRUE)
+            ON CONFLICT (stage_name) DO NOTHING
+        """))
     yield client
     # Teardown: drop all tables after full test session
     Base.metadata.drop_all(client._engine)
@@ -65,6 +83,13 @@ def lineage(db_client):
     return LineageTracker(db_client)
 
 
+@pytest.fixture(scope="function")
+def plog(db_client):
+    """PipelineLogManager instance for tests."""
+    from etl.pipeline_logger import PipelineLogManager
+    return PipelineLogManager(db_client)
+
+
 @pytest.fixture(scope="session")
 def sample_region(db_client):
     """
@@ -80,11 +105,11 @@ def sample_region(db_client):
 
         sess.execute(text("""
             INSERT INTO regions_of_interest
-                (region_code, name, description, bbox, area_km2, admin_level, country_code)
+                (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active)
             VALUES (
                 'JABODTK', 'Jabodetabek', 'Test AOI',
                 ST_GeomFromText('POLYGON((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))', 4326),
-                6392.0, 2, 'ID'
+                6392.0, 2, 'ID', TRUE
             )
         """))
         return sess.scalar(
@@ -105,6 +130,32 @@ def sample_scene(meta, sample_region) -> int:
         cloud_cover_percent  = 12.5,
         resolution_m         = 10,
     )
+
+
+@pytest.fixture(scope="function")
+def sample_dataset(db_client, sample_region) -> int:
+    """
+    Insert a minimal Dataset row directly (bypassing DatasetManager.create_dataset,
+    which spawns a background job runner thread) and return its dataset_id.
+    """
+    from etl.database_client import Dataset
+
+    with db_client.session() as sess:
+        ds = Dataset(
+            name=f"TEST_DATASET_{datetime.now().timestamp()}",
+            location_label="Test AOI",
+            region_id=sample_region,
+            bbox="SRID=4326;POLYGON((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))",
+            bbox_wkt="POLYGON((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))",
+            date_start=datetime(2024, 1, 1, tzinfo=timezone.utc).date(),
+            date_end=datetime(2024, 1, 31, tzinfo=timezone.utc).date(),
+            required_tiers=["RAW", "GOLD"],
+            dataset_kind="STANDARD",
+            status="DRAFT",
+        )
+        sess.add(ds)
+        sess.flush()
+        return ds.dataset_id
 
 
 @pytest.fixture(scope="function")

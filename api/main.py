@@ -3,7 +3,10 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 import logging
+import mimetypes
 import time
+
+mimetypes.add_type("image/webp", ".webp")
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, Response

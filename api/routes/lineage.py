@@ -17,7 +17,7 @@ from etl.lineage_tracker import LineageTracker
 router = APIRouter()
 
 
-def _get_db() -> DatabaseClient:
+async def _get_db() -> DatabaseClient:
     from api.main import get_db
     return get_db()
 

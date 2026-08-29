@@ -23,7 +23,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _get_db() -> DatabaseClient:
+async def _get_db() -> DatabaseClient:
     from api.main import get_db
     return get_db()
 
@@ -117,10 +117,17 @@ async def get_product(
         return _product_to_schema(p)
 
 
+_MEDIA_TYPE_BY_FORMAT = {
+    "HDF5": "application/x-hdf5",
+    "TIFF": "image/tiff",
+    "COG": "image/tiff",
+}
+
+
 @router.get(
     "/{product_id}/download",
     summary="Download product file",
-    description="Stream the output file (COG, filtered TIFF) for download.",
+    description="Stream the output file (fusion HDF5, filtered TIFF) for download.",
 )
 async def download_product(
     product_id: int,
@@ -132,6 +139,7 @@ async def download_product(
             raise HTTPException(404, f"Product {product_id} not found")
         file_path = Path(p.file_path)
         file_name = p.file_name
+        file_format = p.file_format
 
     if not file_path.exists():
         raise HTTPException(
@@ -140,10 +148,11 @@ async def download_product(
             "Storage may be remote (S3/GCS) — use direct cloud URL."
         )
 
+    media_type = _MEDIA_TYPE_BY_FORMAT.get(file_format, "application/octet-stream")
     return FileResponse(
         path         = str(file_path),
         filename     = file_name,
-        media_type   = "image/tiff",
+        media_type   = media_type,
         headers      = {"Content-Disposition": f'attachment; filename="{file_name}"'},
     )
 

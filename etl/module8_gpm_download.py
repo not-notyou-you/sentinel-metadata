@@ -1,9 +1,10 @@
 # etl/module8_gpm_download.py
 """
-Downloads NASA GES DISC GPM IMERG Final (GPM_3IMERGDF) daily rainfall product,
-aggregates it into 24h/72h/7-day accumulation windows, reprojects/crops it to
-the dataset AOI at the Sentinel-1 grid resolution, and writes one GeoTIFF per
-window for lineage tracking.
+Downloads NASA GES DISC GPM IMERG daily rainfall product (Final Run
+GPM_3IMERGDF, falling back to Late Run GPM_3IMERGDL for dates not yet
+published in Final), aggregates it into 24h/72h/7-day accumulation windows,
+reprojects/crops it to the dataset AOI at the Sentinel-1 grid resolution, and
+writes one GeoTIFF per window for lineage tracking.
 """
 
 from __future__ import annotations
@@ -22,12 +23,26 @@ from rasterio.mask import mask
 from rasterio.warp import calculate_default_transform, reproject
 from shapely.geometry import box, mapping
 
+from etl import folder_manager as fm
+from etl.pipeline_logger import PipelineLogger
+
 logger = logging.getLogger(__name__)
 
-IMERG_PRODUCT = "GPM_3IMERGDF"
+MODULE = "MODULE8_GPM_DOWNLOAD"
 IMERG_VERSION = "07"
-GES_DISC_BASE = f"https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/{IMERG_PRODUCT}.{IMERG_VERSION}"
+GES_DISC_ROOT = "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3"
 IMERG_SUBDATASET = "precipitation"  # mm, HDF5/NetCDF variable name
+
+# IMERG Final Run (GPM_3IMERGDF) is the primary, gauge-calibrated product but
+# is published with ~3-4 months of latency. For dates not yet covered by
+# Final, fall back to Late Run (GPM_3IMERGDL, ~14h latency, satellite-only).
+# Falling back is recorded per-day/window so downstream consumers know the
+# accumulation isn't built purely from the calibrated product.
+IMERG_RUNS = {
+    "F": {"product": "GPM_3IMERGDF", "file_infix": ""},
+    "L": {"product": "GPM_3IMERGDL", "file_infix": "-L"},
+}
+IMERG_RUN_ORDER = ["F", "L"]
 
 # Jabodetabek bounding box, WGS84 (min_lon, min_lat, max_lon, max_lat)
 JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
@@ -56,6 +71,20 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _plog_event(
+    plog: PipelineLogger | None,
+    dataset_id: int | None,
+    scene_id: str,
+    stage: str,
+    status: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    if plog is None or dataset_id is None:
+        return
+    plog.log_event(dataset_id, scene_id, MODULE, stage, status, message, details or {})
+
+
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -64,19 +93,39 @@ def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def _daily_granule_filename(date: datetime) -> str:
+class _GranuleNotFound(Exception):
+    """Raised when GES DISC returns 404 for a granule — the file doesn't
+    exist for that run/date, so retrying the same URL is pointless."""
+
+
+def _daily_granule_filename(date: datetime, run: str) -> str:
     date_str = date.strftime("%Y%m%d")
-    return f"3B-DAY.MS.MRG.3IMERG.{date_str}-S000000-E235959.V{IMERG_VERSION}B.nc4"
+    infix = IMERG_RUNS[run]["file_infix"]
+    return f"3B-DAY{infix}.MS.MRG.3IMERG.{date_str}-S000000-E235959.V{IMERG_VERSION}B.nc4"
 
 
-def _daily_granule_url(date: datetime) -> str:
-    return f"{GES_DISC_BASE}/{date.year}/{date.month:02d}/{_daily_granule_filename(date)}"
+def _daily_granule_url(date: datetime, run: str) -> str:
+    product = IMERG_RUNS[run]["product"]
+    base = f"{GES_DISC_ROOT}/{product}.{IMERG_VERSION}"
+    return f"{base}/{date.year}/{date.month:02d}/{_daily_granule_filename(date, run)}"
 
 
-def _download_with_retry(url: str, out_path: Path) -> str:
+def _download_with_retry(
+    url: str,
+    out_path: Path,
+    *,
+    plog: PipelineLogger | None = None,
+    dataset_id: int | None = None,
+    scene_id: str = "",
+    item_label: str = "",
+) -> str:
     """Download `url` to `out_path`, retrying up to MAX_RETRIES times on
     network error or truncated transfer. Returns the file's MD5 checksum.
-    Skips the download entirely if `out_path` already exists on disk."""
+    Skips the download entirely if `out_path` already exists on disk.
+
+    When `plog`/`dataset_id` are given, emits a RUNNING event per attempt
+    (with periodic progress ticks), a terminal FAILED event only once all
+    retries are exhausted, and a COMPLETED event on success."""
     import requests
 
     if out_path.exists() and out_path.stat().st_size > 0:
@@ -87,6 +136,12 @@ def _download_with_retry(url: str, out_path: Path) -> str:
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
+        attempt_started = time.monotonic()
+        _plog_event(
+            plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
+            f"{item_label}: downloading (attempt {attempt}/{MAX_RETRIES})",
+            {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
+        )
         try:
             with requests.get(url, headers=_auth_headers(), stream=True, timeout=300) as r:
                 r.raise_for_status()
@@ -96,6 +151,15 @@ def _download_with_retry(url: str, out_path: Path) -> str:
                     for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
                         f.write(chunk)
                         downloaded += len(chunk)
+                        if expected_size and downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                            _plog_event(
+                                plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
+                                f"{item_label}: {downloaded / 1e6:.0f}/{expected_size / 1e6:.0f} MB",
+                                {
+                                    "item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES,
+                                    "progress_percent": round(downloaded / expected_size * 100, 1),
+                                },
+                            )
 
             if expected_size and downloaded != expected_size:
                 raise IOError(
@@ -105,15 +169,41 @@ def _download_with_retry(url: str, out_path: Path) -> str:
             tmp_path.rename(out_path)
             checksum = _md5(out_path)
             logger.info("[M8] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
+            _plog_event(
+                plog, dataset_id, scene_id, "DOWNLOAD", "COMPLETED",
+                f"{item_label}: downloaded",
+                {
+                    "item": item_label, "attempt": attempt, "file_name": out_path.name,
+                    "file_size_mb": round(downloaded / (1024 ** 2), 2), "checksum_md5": checksum,
+                    "duration_seconds": round(time.monotonic() - attempt_started, 3),
+                },
+            )
             return checksum
 
         except Exception as exc:
             last_exc = exc
+            not_found = isinstance(exc, requests.exceptions.HTTPError) and (
+                exc.response is not None and exc.response.status_code == 404
+            )
             logger.warning(
                 "[M8] download gagal (attempt %d/%d) %s: %s",
                 attempt, MAX_RETRIES, out_path.name, exc,
             )
             tmp_path.unlink(missing_ok=True)
+            is_final = not_found or attempt == MAX_RETRIES
+            _plog_event(
+                plog, dataset_id, scene_id, "DOWNLOAD", "FAILED" if is_final else "RUNNING",
+                f"{item_label}: attempt {attempt}/{MAX_RETRIES} failed ({exc})",
+                {
+                    "item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES,
+                    "error_type": type(exc).__name__, "error_message": str(exc),
+                    "duration_seconds": round(time.monotonic() - attempt_started, 3),
+                },
+            )
+            if not_found:
+                # granule genuinely doesn't exist for this run/date yet (e.g. Final
+                # Run not published) — retrying the same URL won't help.
+                raise _GranuleNotFound(str(exc)) from exc
             if attempt < MAX_RETRIES:
                 time.sleep(2 ** attempt)
 
@@ -134,15 +224,50 @@ def _read_daily_precip(nc4_path: Path):
     return data, transform, crs
 
 
-def _fetch_daily_precip(date: datetime, raw_dir: Path) -> tuple:
-    filename = _daily_granule_filename(date)
-    nc4_path = raw_dir / filename
-    checksum = _download_with_retry(_daily_granule_url(date), nc4_path)
-    data, transform, crs = _read_daily_precip(nc4_path)
-    return data, transform, crs, checksum
+def _fetch_daily_precip(
+    date: datetime,
+    raw_dir: Path,
+    *,
+    plog: PipelineLogger | None = None,
+    dataset_id: int | None = None,
+    scene_id: str = "",
+    window_name: str = "",
+) -> tuple:
+    """Try each run in `IMERG_RUN_ORDER` (Final, then Late) for `date`,
+    falling through to the next run only when the granule genuinely doesn't
+    exist (404) for the previous one."""
+    not_found_reasons = []
+    for run in IMERG_RUN_ORDER:
+        filename = _daily_granule_filename(date, run)
+        nc4_path = raw_dir / filename
+        try:
+            checksum = _download_with_retry(
+                _daily_granule_url(date, run), nc4_path,
+                plog=plog, dataset_id=dataset_id, scene_id=scene_id,
+                item_label=f"{window_name} day {date.date().isoformat()} ({run})",
+            )
+        except _GranuleNotFound as exc:
+            not_found_reasons.append(f"{run}: {exc}")
+            continue
+        data, transform, crs = _read_daily_precip(nc4_path)
+        return data, transform, crs, checksum, run
+
+    raise RuntimeError(
+        f"tidak ada produk IMERG (Final/Late) untuk tanggal {date.date().isoformat()}: "
+        + "; ".join(not_found_reasons)
+    )
 
 
-def _accumulate_window(end_date: datetime, num_days: int, raw_dir: Path) -> tuple:
+def _accumulate_window(
+    end_date: datetime,
+    num_days: int,
+    raw_dir: Path,
+    *,
+    plog: PipelineLogger | None = None,
+    dataset_id: int | None = None,
+    scene_id: str = "",
+    window_name: str = "",
+) -> tuple:
     """Sum daily IMERG rainfall over the `num_days` ending on `end_date`
     (inclusive). All daily granules share the same fixed global grid, so the
     per-pixel sums line up without any resampling at this stage."""
@@ -152,8 +277,10 @@ def _accumulate_window(end_date: datetime, num_days: int, raw_dir: Path) -> tupl
 
     for offset in range(num_days):
         day = end_date - timedelta(days=offset)
-        data, day_transform, day_crs, checksum = _fetch_daily_precip(day, raw_dir)
-        source_checksums[day.date().isoformat()] = checksum
+        data, day_transform, day_crs, checksum, run = _fetch_daily_precip(
+            day, raw_dir, plog=plog, dataset_id=dataset_id, scene_id=scene_id, window_name=window_name,
+        )
+        source_checksums[day.date().isoformat()] = {"checksum_md5": checksum, "run": run}
 
         if accum is None:
             accum = data
@@ -227,36 +354,48 @@ def _reproject_and_crop_to_s1_grid(
 
 def download_gpm_scene(
     dataset_id: int,
+    dataset_name: str,
     date: datetime,
     aoi_bbox: tuple[float, float, float, float] = JABODETABEK_BBOX,
+    plog: PipelineLogger | None = None,
 ) -> tuple[list[str], dict]:
     """
     Build 24h/72h/7-day rainfall accumulation GeoTIFFs for `date` from NASA
     GES DISC GPM IMERG Final daily granules, reprojected/cropped to `aoi_bbox`
     at the Sentinel-1 grid resolution.
 
-    Writes:
-        data/datasets/{dataset_id}/gold/gpm_rain_24h_{date}.tif
-        data/datasets/{dataset_id}/gold/gpm_rain_72h_{date}.tif
-        data/datasets/{dataset_id}/gold/gpm_rain_7d_{date}.tif
+    Writes (fusion *inputs*, consumed by module9_fusion.py — not a GOLD
+    deliverable themselves):
+        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_24h_{date}.tif
+        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_72h_{date}.tif
+        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_7d_{date}.tif
+
+    Each window (24h/72h/7d) is built independently: a window whose daily
+    granules fail to download (after retries) is logged and skipped rather
+    than aborting the other windows. Pass `plog` to also emit structured
+    per-window/per-day/summary events to the `processing_logs` table
+    (visible in the live UI panel).
 
     Returns:
-        (product_ids, metadata_dict) — product_ids is [id_24h, id_72h, id_7d]
-        for lineage tracking; metadata_dict carries per-window output paths,
-        checksums, and the source daily granules each window was built from.
+        (product_ids, metadata_dict) — product_ids covers only the windows
+        that succeeded; metadata_dict carries per-window output paths,
+        checksums, the source daily granules each window was built from, and
+        an overall `quality`/`failed_windows` summary.
     """
-    gold_dir = Path("data") / "datasets" / str(dataset_id) / "gold"
-    raw_dir = Path("data") / "datasets" / str(dataset_id) / "raw" / "gpm"
-    gold_dir.mkdir(parents=True, exist_ok=True)
+    date_key = date.strftime("%Y%m%d")
+    silver_dir = fm.get_scene_dir(dataset_id, dataset_name, "silver", date_key)
+    raw_dir = fm.get_aux_raw_dir(dataset_id, dataset_name, "gpm")
+    silver_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    date_key = date.strftime("%Y%m%d")
+    scene_label = f"GPM_{date_key}"
     product_ids = []
     window_outputs = {}
+    failed_windows: list[dict] = []
 
     for window_name, num_days in WINDOWS.items():
-        out_path = gold_dir / f"gpm_rain_{window_name}_{date_key}.tif"
-        product_id = f"{IMERG_PRODUCT}.{window_name}.{date_key}.jabodetabek"
+        out_path = silver_dir / f"gpm_rain_{window_name}_{date_key}.tif"
+        product_id = f"GPM_3IMERGD.{window_name}.{date_key}.jabodetabek"
 
         if out_path.exists():
             logger.info("[M8] output sudah ada, skip: %s", out_path.name)
@@ -269,30 +408,82 @@ def download_gpm_scene(
             product_ids.append(product_id)
             continue
 
-        accum, transform, crs, source_checksums = _accumulate_window(date, num_days, raw_dir)
-        _reproject_and_crop_to_s1_grid(accum, transform, crs, aoi_bbox, out_path)
+        try:
+            accum, transform, crs, source_checksums = _accumulate_window(
+                date, num_days, raw_dir,
+                plog=plog, dataset_id=dataset_id, scene_id=scene_label, window_name=window_name,
+            )
+            _reproject_and_crop_to_s1_grid(accum, transform, crs, aoi_bbox, out_path)
+        except Exception as exc:
+            logger.warning("[M8] window %s gagal tanggal %s: %s", window_name, date.date().isoformat(), exc)
+            _plog_event(
+                plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
+                f"GPM {window_name}: gagal ({exc})",
+                {
+                    "window": window_name, "days_aggregated": num_days,
+                    "error_type": type(exc).__name__, "error_message": str(exc),
+                },
+            )
+            failed_windows.append({"window": window_name, "reason": str(exc)})
+            continue
 
+        runs_used = {entry["run"] for entry in source_checksums.values()}
         window_outputs[window_name] = {
             "path": str(out_path),
             "checksum_md5": _md5(out_path),
             "days_aggregated": num_days,
             "source_checksums": source_checksums,
+            "runs_used": sorted(runs_used),
             "skipped": False,
         }
         product_ids.append(product_id)
+        _plog_event(
+            plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
+            f"GPM {window_name}: selesai ({num_days} hari)",
+            {"window": window_name, "days_aggregated": num_days},
+        )
+
+    if not window_outputs:
+        raise RuntimeError(
+            f"semua produk GPM gagal untuk dataset_id={dataset_id} tanggal={date.date().isoformat()} "
+            f"({failed_windows})"
+        )
+
+    used_late_run = any(
+        "L" in output.get("runs_used", [])
+        for output in window_outputs.values()
+        if not output.get("skipped")
+    )
+    if failed_windows:
+        quality = "DEGRADED"
+    elif used_late_run:
+        quality = "LATE_RUN"
+    else:
+        quality = "GOOD"
+    _plog_event(
+        plog, dataset_id, scene_label, "DOWNLOAD_SUMMARY", "COMPLETED",
+        f"GPM selesai: {len(window_outputs)}/{len(WINDOWS)} produk"
+        + (f", gagal: {', '.join(w['window'] for w in failed_windows)}" if failed_windows else ""),
+        {
+            "windows_ok": list(window_outputs.keys()),
+            "windows_failed": failed_windows, "quality": quality,
+        },
+    )
 
     metadata = {
-        "product": IMERG_PRODUCT,
+        "product": "GPM_3IMERGD",
         "dataset_id": dataset_id,
         "date": date.date().isoformat(),
         "aoi_bbox": aoi_bbox,
         "crs": DST_CRS,
         "resolution_m": S1_RESOLUTION_M,
         "windows": window_outputs,
+        "quality": quality,
+        "failed_windows": failed_windows,
     }
 
     logger.info(
-        "[M8] selesai: 3 produk rainfall dibuat untuk dataset_id=%s tanggal=%s",
-        dataset_id, date.date().isoformat(),
+        "[M8] selesai: %d/%d produk rainfall dibuat untuk dataset_id=%s tanggal=%s",
+        len(window_outputs), len(WINDOWS), dataset_id, date.date().isoformat(),
     )
     return product_ids, metadata

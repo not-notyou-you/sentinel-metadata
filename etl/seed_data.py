@@ -67,9 +67,9 @@ def seed(db: DatabaseClient) -> dict:
         regions_of_interest (1 row if not exists)
         satellite_scenes    (1 row)
         processing_jobs     (5 rows — one per stage)
-        data_products       (4 rows — RAW + 2×BRONZE VV/VH + 2×SILVER + 2×GOLD)
-        quality_metrics     (2 rows — VV + VH for GOLD product)
-        data_lineage        (6 rows — 3 stages × 2 bands)
+        data_products       (7 rows — 2×RAW + 2×BRONZE + 2×SILVER + 1×GOLD fusion)
+        quality_metrics     (2 rows — VV + VH, against SILVER products)
+        data_lineage        (6 rows — CROP×2, LEE_FILTER×2, FUSION×2 (VV+VH -> 1 fusion product))
         alert_events        (1 info row)
 
     Returns:
@@ -238,43 +238,8 @@ def seed(db: DatabaseClient) -> dict:
     logger.info("[SEED] LEE_FILTER complete. SILVER: VV=%d VH=%d", silver_vv_id, silver_vh_id)
 
     # ------------------------------------------------------------------
-    # 6. COG_EXPORT job (Module 4) → GOLD
-    # ------------------------------------------------------------------
-    cog_job_id = meta.insert_processing_job(
-        scene_id, "COG_EXPORT",
-        parameters={"compression": "LZW", "blocksize": 512, "overview_levels": [2,4,8,16]}
-    )
-    meta.start_job(cog_job_id)
-
-    gold_vv_id = meta.insert_data_product(
-        scene_id=scene_id, job_id=cog_job_id,
-        product_tier=ProductTierEnum.GOLD, product_type="COG",
-        band_name="VV",
-        file_path="/processed/gold/1/S1A_20240115_VV_cog.tif",
-        file_name="S1A_20240115_VV_cog.tif",
-        file_size_mb=41.2, data_hash_sha256=_fake_hash("GOLD_VV"),
-        file_format="COG", rows=5500, cols=5800, pixel_size_m=10.0,
-    )
-    gold_vh_id = meta.insert_data_product(
-        scene_id=scene_id, job_id=cog_job_id,
-        product_tier=ProductTierEnum.GOLD, product_type="COG",
-        band_name="VH",
-        file_path="/processed/gold/1/S1A_20240115_VH_cog.tif",
-        file_name="S1A_20240115_VH_cog.tif",
-        file_size_mb=41.0, data_hash_sha256=_fake_hash("GOLD_VH"),
-        file_format="COG", rows=5500, cols=5800, pixel_size_m=10.0,
-    )
-    meta.complete_job(cog_job_id, output_size_mb=82.2)
-    ids.update({"cog_job_id": cog_job_id, "gold_vv_id": gold_vv_id, "gold_vh_id": gold_vh_id})
-
-    lineage.record_transformation(silver_vv_id, gold_vv_id, "COG_EXPORT", cog_job_id,
-                                  {"compression": "LZW", "blocksize": 512})
-    lineage.record_transformation(silver_vh_id, gold_vh_id, "COG_EXPORT", cog_job_id,
-                                  {"compression": "LZW", "blocksize": 512})
-    logger.info("[SEED] COG_EXPORT complete. GOLD: VV=%d VH=%d", gold_vv_id, gold_vh_id)
-
-    # ------------------------------------------------------------------
-    # 7. QUALITY_ANALYTICS (Module 6)
+    # 6. QUALITY_ANALYTICS (Module 6) — runs against SILVER now, since GOLD
+    #    no longer has per-band products (it's a single fused H5, stage 7).
     # ------------------------------------------------------------------
     qa_job_id = meta.insert_processing_job(scene_id, "QUALITY_ANALYTICS",
                                            parameters={"cloud_threshold": 20.0})
@@ -283,7 +248,7 @@ def seed(db: DatabaseClient) -> dict:
     total = 5500 * 5800  # 31,900,000 pixels
 
     vv_metric_id = meta.insert_quality_metrics(
-        scene_id=scene_id, product_id=gold_vv_id, band_name="VV",
+        scene_id=scene_id, product_id=silver_vv_id, band_name="VV",
         total_pixels=total, valid_pixels=total - 320000, nodata_pixels=320000,
         quality_score=82.4,
         backscatter_mean_db=-12.37, backscatter_std_db=2.81,
@@ -293,7 +258,7 @@ def seed(db: DatabaseClient) -> dict:
         notes="Good quality acquisition. Low cloud cover. Normal backscatter range.",
     )
     vh_metric_id = meta.insert_quality_metrics(
-        scene_id=scene_id, product_id=gold_vh_id, band_name="VH",
+        scene_id=scene_id, product_id=silver_vh_id, band_name="VH",
         total_pixels=total, valid_pixels=total - 318500, nodata_pixels=318500,
         quality_score=81.1,
         backscatter_mean_db=-19.82, backscatter_std_db=3.14,
@@ -304,6 +269,35 @@ def seed(db: DatabaseClient) -> dict:
     )
     meta.complete_job(qa_job_id)
     ids.update({"qa_job_id": qa_job_id, "vv_metric_id": vv_metric_id, "vh_metric_id": vh_metric_id})
+
+    # ------------------------------------------------------------------
+    # 7. FUSION job (Module 9) → GOLD — single multi-modal HDF5 stack,
+    #    the only GOLD deliverable. Combines both SILVER bands, so lineage
+    #    records both VV and VH as parents of the one fusion product.
+    # ------------------------------------------------------------------
+    fusion_job_id = meta.insert_processing_job(
+        scene_id, "FUSION",
+        parameters={"s1_date": ACQUISITION_DT.date().isoformat()}
+    )
+    meta.start_job(fusion_job_id)
+
+    gold_fusion_id = meta.insert_data_product(
+        scene_id=scene_id, job_id=fusion_job_id,
+        product_tier=ProductTierEnum.GOLD, product_type="FUSION_H5",
+        band_name="FUSION",
+        file_path="/processed/gold/1/fusion_20240115.h5",
+        file_name="fusion_20240115.h5",
+        file_size_mb=52.4, data_hash_sha256=_fake_hash("GOLD_FUSION"),
+        file_format="HDF5", rows=5500, cols=5800,
+    )
+    meta.complete_job(fusion_job_id, output_size_mb=52.4)
+    ids.update({"fusion_job_id": fusion_job_id, "gold_fusion_id": gold_fusion_id})
+
+    lineage.record_transformation(silver_vv_id, gold_fusion_id, "FUSION", fusion_job_id,
+                                  {"aoi_bbox": JABODETABEK_WKT})
+    lineage.record_transformation(silver_vh_id, gold_fusion_id, "FUSION", fusion_job_id,
+                                  {"aoi_bbox": JABODETABEK_WKT})
+    logger.info("[SEED] FUSION complete. GOLD: fusion=%d", gold_fusion_id)
 
     # Info alert: data arrived and processed
     alert_id = meta.insert_alert_event(
@@ -334,19 +328,19 @@ def verify_seed(db: DatabaseClient, ids: dict) -> None:
         logger.info("[VERIFY] satellite_scenes count: %d", scene_count)
         assert scene_count >= 1
 
-        # 2. Gold products
+        # 2. Gold products (single fused H5 per scene, not per-band)
         gold_count = sess.scalar(
             text("SELECT COUNT(*) FROM data_products WHERE product_tier = 'GOLD' AND is_latest = TRUE")
         )
         logger.info("[VERIFY] GOLD latest products: %d", gold_count)
-        assert gold_count >= 2, "Expected VV + VH gold products"
+        assert gold_count >= 1, "Expected 1 GOLD fusion product"
 
         # 3. Lineage chain
         lin_count = sess.scalar(
             text("SELECT COUNT(*) FROM data_lineage WHERE job_id = :jid"),
-            {"jid": ids["cog_job_id"]}
+            {"jid": ids["fusion_job_id"]}
         )
-        logger.info("[VERIFY] Lineage records for COG job: %d", lin_count)
+        logger.info("[VERIFY] Lineage records for FUSION job: %d", lin_count)
         assert lin_count == 2
 
         # 4. Quality metrics
@@ -374,10 +368,9 @@ if __name__ == "__main__":
         inserted_ids = seed(db)
         verify_seed(db, inserted_ids)
         print("\n✅ Seed data inserted and verified successfully.")
-        print(f"   Scene ID  : {inserted_ids['scene_id']}")
-        print(f"   GOLD VV   : product_id={inserted_ids['gold_vv_id']}")
-        print(f"   GOLD VH   : product_id={inserted_ids['gold_vh_id']}")
-        print(f"   QA VV     : metric_id={inserted_ids['vv_metric_id']}")
+        print(f"   Scene ID    : {inserted_ids['scene_id']}")
+        print(f"   GOLD FUSION : product_id={inserted_ids['gold_fusion_id']}")
+        print(f"   QA VV       : metric_id={inserted_ids['vv_metric_id']}")
     except Exception as e:
         logger.error("Seed failed: %s", e, exc_info=True)
         sys.exit(1)

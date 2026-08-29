@@ -18,11 +18,15 @@ from rasterio.enums import Resampling
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject
 
+from etl import folder_manager as fm
+from etl.pipeline_logger import PipelineLogger
+
 logger = logging.getLogger(__name__)
 
 MODIS_PRODUCT = "MCDWD_L3_F2_NRT"
 LAADS_BASE = f"https://nrt3.modaps.eosdis.nasa.gov/archive/allData/61/{MODIS_PRODUCT}"
 MODIS_TILES = ["h30v08", "h31v08"]
+MODULE = "MODULE7_MODIS_DOWNLOAD"
 
 # Jabodetabek bounding box, WGS84 (min_lon, min_lat, max_lon, max_lat)
 JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
@@ -46,6 +50,20 @@ def _daterange(date_start: datetime, date_end: datetime):
     while d.date() <= date_end.date():
         yield d
         d += timedelta(days=1)
+
+
+def _plog_event(
+    plog: PipelineLogger | None,
+    dataset_id: int | None,
+    scene_id: str,
+    stage: str,
+    status: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    if plog is None or dataset_id is None:
+        return
+    plog.log_event(dataset_id, scene_id, MODULE, stage, status, message, details or {})
 
 
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
@@ -79,10 +97,22 @@ def _discover_tile_files(date: datetime, tiles: list[str]) -> list[dict]:
     return found
 
 
-def _download_with_retry(url: str, out_path: Path) -> str:
+def _download_with_retry(
+    url: str,
+    out_path: Path,
+    *,
+    plog: PipelineLogger | None = None,
+    dataset_id: int | None = None,
+    scene_id: str = "",
+    item_label: str = "",
+) -> str:
     """Download `url` to `out_path`, retrying up to MAX_RETRIES times on
     network error or truncated transfer. Returns the file's MD5 checksum.
-    Skips the download entirely if `out_path` already exists on disk."""
+    Skips the download entirely if `out_path` already exists on disk.
+
+    When `plog`/`dataset_id` are given, emits a RUNNING event per attempt
+    (with periodic progress ticks), a terminal FAILED event only once all
+    retries are exhausted, and a COMPLETED event on success."""
     import requests
 
     if out_path.exists() and out_path.stat().st_size > 0:
@@ -93,6 +123,12 @@ def _download_with_retry(url: str, out_path: Path) -> str:
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
+        attempt_started = time.monotonic()
+        _plog_event(
+            plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
+            f"{item_label}: downloading (attempt {attempt}/{MAX_RETRIES})",
+            {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
+        )
         try:
             with requests.get(url, headers=_auth_headers(), stream=True, timeout=300) as r:
                 r.raise_for_status()
@@ -102,6 +138,15 @@ def _download_with_retry(url: str, out_path: Path) -> str:
                     for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
                         f.write(chunk)
                         downloaded += len(chunk)
+                        if expected_size and downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                            _plog_event(
+                                plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
+                                f"{item_label}: {downloaded / 1e6:.0f}/{expected_size / 1e6:.0f} MB",
+                                {
+                                    "item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES,
+                                    "progress_percent": round(downloaded / expected_size * 100, 1),
+                                },
+                            )
 
             if expected_size and downloaded != expected_size:
                 raise IOError(
@@ -111,6 +156,15 @@ def _download_with_retry(url: str, out_path: Path) -> str:
             tmp_path.rename(out_path)
             checksum = _md5(out_path)
             logger.info("[M7] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
+            _plog_event(
+                plog, dataset_id, scene_id, "DOWNLOAD", "COMPLETED",
+                f"{item_label}: downloaded",
+                {
+                    "item": item_label, "attempt": attempt, "file_name": out_path.name,
+                    "file_size_mb": round(downloaded / (1024 ** 2), 2), "checksum_md5": checksum,
+                    "duration_seconds": round(time.monotonic() - attempt_started, 3),
+                },
+            )
             return checksum
 
         except Exception as exc:
@@ -120,6 +174,16 @@ def _download_with_retry(url: str, out_path: Path) -> str:
                 attempt, MAX_RETRIES, out_path.name, exc,
             )
             tmp_path.unlink(missing_ok=True)
+            is_final = attempt == MAX_RETRIES
+            _plog_event(
+                plog, dataset_id, scene_id, "DOWNLOAD", "FAILED" if is_final else "RUNNING",
+                f"{item_label}: attempt {attempt}/{MAX_RETRIES} failed ({exc})",
+                {
+                    "item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES,
+                    "error_type": type(exc).__name__, "error_message": str(exc),
+                    "duration_seconds": round(time.monotonic() - attempt_started, 3),
+                },
+            )
             if attempt < MAX_RETRIES:
                 time.sleep(2 ** attempt)
 
@@ -205,30 +269,43 @@ def _mosaic_and_crop(
 
 def download_modis_scene(
     dataset_id: int,
+    dataset_name: str,
     date_start: datetime,
     date_end: datetime,
     aoi_bbox: tuple[float, float, float, float] = JABODETABEK_BBOX,
     tiles: list[str] = MODIS_TILES,
+    plog: PipelineLogger | None = None,
 ) -> tuple[str, dict]:
     """
     Download the MODIS MCDWD flood product from NASA LAADS DAAC for every
     day in [date_start, date_end], reproject/crop each day to `aoi_bbox`,
-    and write GeoTIFFs to data/datasets/{dataset_id}/gold/modis_{date}_flood.tif.
+    and write GeoTIFFs to
+    data/datasets/{id}_{slug}/silver/{date}/modis_{date}_flood.tif
+    (these are fusion *inputs*, consumed by module9_fusion.py — not a GOLD
+    deliverable themselves).
+
+    A day whose tile listing/download/mosaic fails is logged and skipped
+    rather than aborting the whole date range; a day with some (not all)
+    tiles missing still produces a degraded mosaic from the tiles that did
+    download. Pass `plog` to also emit structured per-tile/per-day/summary
+    events to the `processing_logs` table (visible in the live UI panel).
 
     Returns:
         (product_id, metadata_dict) — product_id identifies the source NASA
         product for lineage tracking; metadata_dict carries per-day output
-        paths and MD5 checksums.
+        paths, MD5 checksums, and an overall `quality`/`failed_days` summary.
     """
-    gold_dir = Path("data") / "datasets" / str(dataset_id) / "gold"
-    raw_dir = Path("data") / "datasets" / str(dataset_id) / "raw" / "modis"
-    gold_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = fm.get_aux_raw_dir(dataset_id, dataset_name, "modis")
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     daily_outputs = []
+    failed_days: list[dict] = []
     for date in _daterange(date_start, date_end):
         date_key = date.strftime("%Y%m%d")
-        out_path = gold_dir / f"modis_{date_key}_flood.tif"
+        scene_label = f"MODIS_{date_key}"
+        silver_dir = fm.get_scene_dir(dataset_id, dataset_name, "silver", date_key)
+        silver_dir.mkdir(parents=True, exist_ok=True)
+        out_path = silver_dir / f"modis_{date_key}_flood.tif"
 
         if out_path.exists():
             logger.info("[M7] output sudah ada, skip: %s", out_path.name)
@@ -237,39 +314,108 @@ def download_modis_scene(
                 "flood_path": str(out_path),
                 "checksum_md5": _md5(out_path),
                 "skipped": True,
+                "degraded": False,
+                "failed_tiles": [],
             })
             continue
 
-        items = _discover_tile_files(date, tiles)
+        try:
+            items = _discover_tile_files(date, tiles)
+        except Exception as exc:
+            logger.warning("[M7] gagal listing granule tanggal %s: %s", date.date().isoformat(), exc)
+            _plog_event(
+                plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
+                f"MODIS {date_key}: gagal listing granule LAADS ({exc})",
+                {"date": date.date().isoformat(), "error_type": type(exc).__name__, "error_message": str(exc)},
+            )
+            failed_days.append({"date": date.date().isoformat(), "reason": f"listing failed: {exc}"})
+            continue
+
         if not items:
             logger.warning("[M7] tidak ada granule MCDWD untuk tanggal %s", date.date().isoformat())
             continue
 
         tile_tifs = []
         source_checksums = {}
+        failed_tiles = []
         for item in items:
-            hdf_path = raw_dir / item["file_name"]
-            source_checksums[item["tile"]] = _download_with_retry(item["download_url"], hdf_path)
+            try:
+                hdf_path = raw_dir / item["file_name"]
+                source_checksums[item["tile"]] = _download_with_retry(
+                    item["download_url"], hdf_path,
+                    plog=plog, dataset_id=dataset_id, scene_id=scene_label,
+                    item_label=f"tile {item['tile']}",
+                )
+                tile_tif = raw_dir / f"{Path(item['file_name']).stem}_flood.tif"
+                _hdf_subdataset_to_geotiff(hdf_path, "Flood 1-day 250m", tile_tif)
+                tile_tifs.append(tile_tif)
+            except Exception as exc:
+                logger.warning("[M7] tile %s gagal (tanggal %s): %s", item["tile"], date.date().isoformat(), exc)
+                failed_tiles.append(item["tile"])
 
-            tile_tif = raw_dir / f"{Path(item['file_name']).stem}_flood.tif"
-            _hdf_subdataset_to_geotiff(hdf_path, "Flood 1-day 250m", tile_tif)
-            tile_tifs.append(tile_tif)
+        if not tile_tifs:
+            logger.warning("[M7] semua tile gagal untuk tanggal %s, skip hari ini", date.date().isoformat())
+            _plog_event(
+                plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
+                f"MODIS {date_key}: semua tile gagal ({', '.join(failed_tiles)})",
+                {"date": date.date().isoformat(), "failed_tiles": failed_tiles},
+            )
+            failed_days.append({"date": date.date().isoformat(), "reason": f"all tiles failed: {failed_tiles}"})
+            continue
 
-        _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
+        try:
+            _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
+        except Exception as exc:
+            logger.warning("[M7] mosaic gagal tanggal %s: %s", date.date().isoformat(), exc)
+            _plog_event(
+                plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
+                f"MODIS {date_key}: mosaic/crop gagal ({exc})",
+                {"date": date.date().isoformat(), "error_type": type(exc).__name__, "error_message": str(exc)},
+            )
+            failed_days.append({"date": date.date().isoformat(), "reason": f"mosaic failed: {exc}"})
+            continue
 
+        degraded = bool(failed_tiles)
         daily_outputs.append({
             "date": date.date().isoformat(),
             "flood_path": str(out_path),
             "checksum_md5": _md5(out_path),
             "source_tiles": source_checksums,
             "skipped": False,
+            "degraded": degraded,
+            "failed_tiles": failed_tiles,
         })
+        _plog_event(
+            plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
+            f"MODIS {date_key}: {'selesai (degraded)' if degraded else 'selesai'} "
+            f"({len(tile_tifs)}/{len(items)} tile)",
+            {
+                "date": date.date().isoformat(), "tiles_ok": len(tile_tifs), "tiles_total": len(items),
+                "degraded": degraded, "failed_tiles": failed_tiles,
+            },
+        )
 
     if not daily_outputs:
         raise RuntimeError(
             f"tidak ada produk MCDWD ditemukan untuk rentang "
             f"{date_start.date()}..{date_end.date()} di tiles {tiles}"
+            + (f" (gagal: {failed_days})" if failed_days else "")
         )
+
+    degraded_days = sum(1 for d in daily_outputs if d.get("degraded"))
+    quality = "GOOD" if not failed_days and not degraded_days else "DEGRADED"
+    total_days = len(daily_outputs) + len(failed_days)
+    _plog_event(
+        plog, dataset_id, f"MODIS_{date_start.strftime('%Y%m%d')}_{date_end.strftime('%Y%m%d')}",
+        "DOWNLOAD_SUMMARY", "COMPLETED",
+        f"MODIS selesai: {len(daily_outputs)}/{total_days} hari berhasil"
+        + (f", {len(failed_days)} gagal" if failed_days else "")
+        + (f", {degraded_days} degraded" if degraded_days else ""),
+        {
+            "days_ok": len(daily_outputs), "days_degraded": degraded_days,
+            "days_failed": len(failed_days), "failed_days": failed_days, "quality": quality,
+        },
+    )
 
     product_id = (
         f"{MODIS_PRODUCT}.{date_start.strftime('%Y%m%d')}_{date_end.strftime('%Y%m%d')}"
@@ -284,6 +430,8 @@ def download_modis_scene(
         "tiles": tiles,
         "crs": DST_CRS,
         "outputs": daily_outputs,
+        "quality": quality,
+        "failed_days": failed_days,
     }
 
     logger.info("[M7] selesai: %d hari diproses untuk dataset_id=%s", len(daily_outputs), dataset_id)

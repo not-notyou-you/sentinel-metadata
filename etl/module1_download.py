@@ -9,6 +9,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ def download_scene(
     scene_meta: dict,
     output_dir: str = "recovered_temp",
     keep_raw: bool = False,
+    progress_cb: Callable[[float, str], None] | None = None,
 ) -> DownloadResult:
     import requests
 
@@ -202,6 +204,8 @@ def download_scene(
                                     pct = downloaded / total * 100
                                     if downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
                                         logger.info("[M1] Download: %.0f%%  (%.0f / %.0f MB)", pct, downloaded / 1e6, total / 1e6)
+                                        if progress_cb:
+                                            progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
 
                     part_path.rename(zip_path)
                     logger.info("[M1] Download selesai.")

@@ -32,7 +32,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _get_db() -> DatabaseClient:
+async def _get_db() -> DatabaseClient:
     from api.main import get_db
     return get_db()
 
@@ -136,7 +136,7 @@ def _generate_thumbnail(
     "/latest",
     summary="Gambar terbaru",
     description=(
-        "Mengembalikan metadata 3–5 scene terbaru dengan GOLD product, "
+        "Mengembalikan metadata 3–5 scene terbaru dengan SILVER product, "
         "beserta URL thumbnail untuk ditampilkan di dashboard."
     ),
 )
@@ -146,16 +146,19 @@ async def get_latest_previews(
     band:  str            = Query("VV", pattern="^(VV|VH)$", description="Band yang ditampilkan"),
 ) -> JSONResponse:
     """
-    Ambil N scene terbaru yang sudah punya GOLD COG product.
+    Ambil N scene terbaru yang sudah punya SILVER (LEE-filtered) product.
+    GOLD tier sekarang berisi HDF5 fusion stack (bukan GeoTIFF per-band), jadi
+    tidak bisa di-thumbnail langsung — SILVER adalah tier raster per-band
+    terakhir yang tersedia untuk preview.
     Response berisi metadata + URL thumbnail.
     """
     with db.session() as sess:
-        # Ambil GOLD products terbaru
+        # Ambil SILVER products terbaru
         products = sess.scalars(
             select(DataProduct)
             .where(
                 and_(
-                    DataProduct.product_tier == ProductTierEnum.GOLD,
+                    DataProduct.product_tier == ProductTierEnum.SILVER,
                     DataProduct.band_name    == band,
                     DataProduct.is_latest    == True,
                     DataProduct.is_valid     == True,

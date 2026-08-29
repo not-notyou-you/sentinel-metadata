@@ -89,6 +89,8 @@ class MetadataManager:
         output_size_mb: float | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        cpu_usage_percent: float | None = None,
+        memory_usage_mb: float | None = None,
     ) -> None:
         with self._db.session() as sess:
             job = sess.get(ProcessingJob, job_id)
@@ -99,6 +101,10 @@ class MetadataManager:
             job.output_size_mb = output_size_mb
             job.error_code = error_code
             job.error_message = error_message
+            if cpu_usage_percent is not None:
+                job.cpu_usage_percent = cpu_usage_percent
+            if memory_usage_mb is not None:
+                job.memory_usage_mb = memory_usage_mb
         logger.info("[JOB] job_id=%d -> %s", job_id, status.value)
 
     def insert_satellite_scene(
@@ -458,6 +464,7 @@ class MetadataManager:
                 {
                     "product_id": p.product_id,
                     "product_uuid": str(p.product_uuid),
+                    "job_id": p.job_id,
                     "dataset_id": p.dataset_id,
                     "product_tier": p.product_tier.value,
                     "product_type": p.product_type,

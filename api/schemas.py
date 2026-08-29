@@ -338,12 +338,21 @@ class DatasetCancelResponse(BaseModel):
 
 
 class DatasetLogEntry(BaseModel):
+    log_id: int
     timestamp: datetime
+    module: str
+    dataset_id: int
     scene_id: str
     stage: str
     status: str
     message: str
-    error: str | None
+    details: dict
+
+
+class DatasetLogsResponse(BaseModel):
+    total: int
+    limit: int
+    logs: list[DatasetLogEntry]
 
 
 class CleanupOperationItem(BaseModel):

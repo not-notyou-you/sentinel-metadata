@@ -120,19 +120,19 @@ class TestSchemaCreation:
         assert required.issubset(cols)
 
     def test_processing_stages_seeded(self, db_client):
-        """processing_stages must have exactly 6 seeded rows (Modules 1-6)."""
+        """processing_stages must have exactly 7 seeded rows (Modules 1-6 + FUSION)."""
         with db_client.session() as sess:
             count = sess.scalar(text("SELECT COUNT(*) FROM processing_stages"))
-        assert count == 6, f"Expected 6 stages, got {count}"
+        assert count == 7, f"Expected 7 stages, got {count}"
 
     def test_processing_stages_order(self, db_client):
-        """Stages must be ordered 1-6 with unique stage_order."""
+        """Stages must be ordered 1-7 with unique stage_order."""
         with db_client.session() as sess:
             rows = sess.execute(
                 text("SELECT stage_order, stage_name FROM processing_stages ORDER BY stage_order")
             ).fetchall()
         orders = [r[0] for r in rows]
-        assert orders == list(range(1, 7)), f"Stage orders not sequential: {orders}"
+        assert orders == list(range(1, 8)), f"Stage orders not sequential: {orders}"
 
 
 # ---------------------------------------------------------------------------

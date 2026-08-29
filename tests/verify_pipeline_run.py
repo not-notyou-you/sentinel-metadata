@@ -29,8 +29,8 @@ def verify_scene(scene_id: int) -> bool:
             print(f"        error: {stage['error_message']}")
 
     products = meta.get_products_by_scene(scene_id, tier="GOLD")
-    if len(products) < 2:
-        print(f"[FAIL] expected 2 GOLD products, found {len(products)}")
+    if len(products) < 1:
+        print(f"[FAIL] expected 1 GOLD fusion product, found {len(products)}")
         ok = False
 
     for p in products:

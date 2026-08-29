@@ -10,6 +10,7 @@ from etl.database_client import (
     DatabaseClient,
     DataProduct,
     DatasetJob,
+    SatelliteScene,
     SceneJobState,
 )
 from etl.location_resolver import resolve_location
@@ -22,8 +23,8 @@ STAGE_TIER_INDEX = {
     "DOWNLOAD": 0,
     "CROP": 1,
     "LEE_FILTER": 2,
-    "COG_EXPORT": 3,
-    "QUALITY_ANALYTICS": 3,
+    "QUALITY_ANALYTICS": 2,
+    "FUSION": 3,
 }
 
 _active_threads: dict[str, threading.Thread] = {}
@@ -174,6 +175,20 @@ class DatasetManager:
                 return None
             return self._dataset_to_dict(dataset, detail=True)
 
+    def get_acquisition_dates(self, dataset_id: int) -> list[str]:
+        """Semua tanggal akuisisi (YYYYMMDD) scene yang punya data_products
+        untuk dataset ini — dipakai untuk ringkasan metadata.json, karena
+        layout on-disk (tier-first) tidak lagi punya folder tanggal di
+        level teratas untuk dijelajahi langsung."""
+        with self._db.session() as sess:
+            rows = sess.scalars(
+                select(SatelliteScene.acquisition_datetime)
+                .join(DataProduct, DataProduct.scene_id == SatelliteScene.scene_id)
+                .where(DataProduct.dataset_id == dataset_id)
+                .distinct()
+            ).all()
+        return sorted({dt.strftime("%Y%m%d") for dt in rows})
+
     def get_live_dataset(self) -> dict | None:
         with self._db.session() as sess:
             dataset = sess.scalar(select(Dataset).where(Dataset.dataset_kind == "LIVE"))
@@ -255,7 +270,7 @@ class DatasetManager:
         dataset_id = live["dataset_id"]
 
         from etl.deletion_manager import DeletionManager
-        file_result = DeletionManager(self._db, dataset_id).clear_files_only()
+        file_result = DeletionManager(self._db, dataset_id, live["name"]).clear_files_only()
 
         with self._db.session() as sess:
             sess.query(DataProduct).filter(DataProduct.dataset_id == dataset_id).delete(synchronize_session=False)
@@ -395,13 +410,14 @@ class DatasetManager:
             job.completed_at = datetime.now(timezone.utc)
             dataset.status = "CANCELLED"
             job_id = job.job_id
+            dataset_name = dataset.name
         get_cancel_event(job_id).set()
         get_pause_event(job_id).set()
 
         deleted_files = 0
         if cascade_delete:
             from etl.deletion_manager import DeletionManager
-            tier_result = DeletionManager(self._db, dataset_id).delete_tiers(["RAW", "BRONZE", "SILVER"])
+            tier_result = DeletionManager(self._db, dataset_id, dataset_name).delete_tiers(["RAW", "BRONZE", "SILVER"])
             deleted_files = tier_result["deleted_count"]
 
         logger.info(
@@ -409,25 +425,6 @@ class DatasetManager:
             dataset_id, job_id, cascade_delete, deleted_files,
         )
         return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": "GOLD"}
-
-    def get_recent_logs(self, dataset_id: int, limit: int = 5, order: str = "desc") -> list[dict]:
-        with self._db.session() as sess:
-            job = sess.scalar(
-                select(DatasetJob)
-                .where(DatasetJob.dataset_id == dataset_id)
-                .order_by(DatasetJob.created_at.desc())
-            )
-            if job is None:
-                return []
-            ts_col = func.coalesce(SceneJobState.completed_at, SceneJobState.started_at, SceneJobState.created_at)
-            stmt = (
-                select(SceneJobState)
-                .where(SceneJobState.job_id == job.job_id)
-                .order_by(ts_col.desc() if order == "desc" else ts_col.asc())
-                .limit(limit)
-            )
-            rows = sess.scalars(stmt).all()
-            return [self._scene_state_to_log_entry(r) for r in rows]
 
     def delete_dataset(self, dataset_id: int, force: bool = False) -> dict:
         with self._db.session() as sess:
@@ -611,6 +608,11 @@ class DatasetManager:
         key = f"delete-{dataset_id}"
         if _is_thread_alive(key):
             return
+        with self._db.session() as sess:
+            dataset = sess.get(Dataset, dataset_id)
+            if dataset is None:
+                return
+            dataset_name = dataset.name
         try:
             from etl.deletion_manager import DeletionManager
         except ImportError as exc:
@@ -623,7 +625,7 @@ class DatasetManager:
 
         def _runner() -> None:
             try:
-                DeletionManager(self._db, dataset_id).delete_all()
+                DeletionManager(self._db, dataset_id, dataset_name).delete_all()
             except Exception:
                 logger.exception("[DATASET] deletion gagal dataset_id=%d", dataset_id)
 
@@ -682,26 +684,6 @@ class DatasetManager:
             "created_at": j.created_at,
             "started_at": j.started_at,
             "completed_at": j.completed_at,
-        }
-
-    _LOG_STATUS_MAP = {
-        "PENDING": "PENDING",
-        "RUNNING": "IN_PROGRESS",
-        "COMPLETED": "OK",
-        "FAILED": "ERROR",
-        "SKIPPED": "SKIPPED",
-    }
-
-    def _scene_state_to_log_entry(self, s: SceneJobState) -> dict:
-        timestamp = s.completed_at or s.started_at or s.created_at
-        message = s.last_error or f"{s.current_stage or 'QUEUED'} {s.stage_status.lower()}"
-        return {
-            "timestamp": timestamp,
-            "scene_id": s.product_identifier,
-            "stage": s.current_stage or "QUEUED",
-            "status": self._LOG_STATUS_MAP.get(s.stage_status, s.stage_status),
-            "message": message,
-            "error": s.last_error,
         }
 
     def _scene_state_to_dict(self, s: SceneJobState) -> dict:

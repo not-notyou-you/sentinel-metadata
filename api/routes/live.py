@@ -20,7 +20,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _get_db() -> DatabaseClient:
+async def _get_db() -> DatabaseClient:
     from api.main import get_db
     return get_db()
 

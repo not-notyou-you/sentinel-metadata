@@ -42,9 +42,9 @@ class LineageTracker:
         - Query full transformation history for any product
 
     The transformation DAG maps pipeline stages to lineage links:
-        RAW (download) ──CROP──► BRONZE
-        BRONZE         ──LEE───► SILVER
-        SILVER         ──COG───► GOLD
+        RAW (download) ──CROP───────► BRONZE
+        BRONZE         ──LEE────────► SILVER
+        SILVER         ──FUSION─────► GOLD (fused HDF5 stack)
 
     Args:
         db: Initialized DatabaseClient instance
@@ -55,6 +55,7 @@ class LineageTracker:
         "CROP":       "CROP",
         "LEE_FILTER": "LEE_FILTER",
         "COG_EXPORT": "COG_EXPORT",
+        "FUSION":     "FUSION",
         "ANALYTICS":  "QUALITY_ANALYTICS",
     }
 
