@@ -12,27 +12,31 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
   --font-sans: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --radius: 10px;
-  --glass-bg: rgba(10,14,26,0.3);
-  --glass-bg-alt: rgba(18,26,44,0.3);
+  --glass-bg: rgba(10,14,26,0.16);
+  --glass-bg-alt: rgba(18,26,44,0.22);
+  --glass-bg-hover: rgba(10,14,26,0.08);
   --glass-border: rgba(255,255,255,0.10);
-  --glass-blur: 18px;
+  --glass-blur: 22px;
   --glass-grad: linear-gradient(135deg, rgba(53,208,192,0.9) 0%, rgba(10,14,26,0.9) 65%);
 }
 
 /* ---- Glassmorphism base: translucent surface + gradient border + inner depth shadows ---- */
-.glass, .floatnav, .panel, .card, .modal, .toast, .region-card, .loc-section, .config-section, .map-frame {
+/* overflow:hidden clips background/blur fill to the rounded border so it never bleeds past the corners */
+.glass, .floatnav, .panel, .card, .modal, .toast, .region-card, .loc-section, .config-section {
   position: relative;
   background: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur)) saturate(140%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
   border: 2px solid transparent;
+  overflow: hidden;
   box-shadow:
     inset -4px -4px 10px rgba(0,0,0,0.35),
     inset 4px 4px 10px rgba(255,255,255,0.05),
     0 8px 32px rgba(0,0,0,0.28);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
 }
 .glass::before, .floatnav::before, .panel::before, .card::before, .modal::before, .toast::before,
-.region-card::before, .loc-section::before, .config-section::before, .map-frame::before {
+.region-card::before, .loc-section::before, .config-section::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -44,14 +48,28 @@
   mask-composite: exclude;
   pointer-events: none;
 }
+
+/* ---- Hover: cards get a bit more transparent and pick up a soft glow ---- */
+.card:hover, .panel:hover, .loc-section:hover, .config-section:hover {
+  background: var(--glass-bg-hover);
+  box-shadow:
+    inset -4px -4px 10px rgba(0,0,0,0.35),
+    inset 4px 4px 10px rgba(255,255,255,0.05),
+    0 8px 32px rgba(0,0,0,0.28),
+    0 0 46px rgba(53,208,192,0.4);
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-html { background: var(--ink); }
+html { background: var(--ink); pointer-events: none; }
 body {
   background: transparent;
   color: var(--text);
   font-family: var(--font-sans);
   min-height: 100vh;
+  /* body itself has no paint of its own but still sits in front of the fixed bg map in
+     stacking order; pointer-events:none here lets drags/clicks fall through to the map,
+     with the real UI layers (nav, modals, toasts, panel content) opting back into auto. */
+  pointer-events: none;
 }
 a { color: var(--cyan); text-decoration: none; }
 button { font-family: inherit; }
@@ -63,6 +81,7 @@ button { font-family: inherit; }
   inset: 0;
   z-index: -2;
   filter: saturate(1.15);
+  pointer-events: auto;
 }
 #bgOverlay {
   position: fixed;
@@ -75,29 +94,37 @@ button { font-family: inherit; }
     linear-gradient(180deg, rgba(6,9,16,0.55), rgba(6,9,16,0.72));
 }
 
-/* ---- Floating navbar: compact pill that widens on hover/focus ---- */
-.floatnav {
+/* ---- Floating navbar: compact circular pill that widens when the header
+   area (plus 50px above/below) is hovered ---- */
+.floatnav-zone {
   position: fixed;
-  top: 18px;
+  top: -32px; /* nav's 18px top minus the 50px hover margin */
   left: 50%;
   transform: translateX(-50%);
   z-index: 30;
+  padding: 50px 0;
+  pointer-events: none;
+}
+.floatnav {
   display: flex;
   align-items: center;
   gap: 22px;
   padding: 10px 14px;
   border-radius: 999px;
-  max-width: 68px;
+  max-width: 52px;
   overflow: hidden;
   white-space: nowrap;
   cursor: pointer;
+  pointer-events: auto;
   transition: max-width 0.4s cubic-bezier(.4,0,.2,1), gap 0.4s ease;
 }
-.floatnav:hover, .floatnav:focus-within, .floatnav.expanded { max-width: 920px; gap: 26px; }
+.floatnav-zone:hover .floatnav,
+.floatnav:focus-within,
+.floatnav.expanded { max-width: 920px; gap: 26px; }
 .floatnav-brand { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .brand-mark { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; object-fit: cover; display: block; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.3; opacity: 0; transition: opacity 0.2s ease; }
-.floatnav:hover .brand-text, .floatnav:focus-within .brand-text, .floatnav.expanded .brand-text { opacity: 1; transition-delay: 0.15s; }
+.floatnav-zone:hover .brand-text, .floatnav:focus-within .brand-text, .floatnav.expanded .brand-text { opacity: 1; transition-delay: 0.15s; }
 .brand-name {
   font-family: var(--font-mono);
   font-weight: 700;
@@ -107,7 +134,7 @@ button { font-family: inherit; }
 .brand-sub { font-size: 12px; color: var(--text-dim); }
 
 .floatnav-tabs { display: flex; gap: 4px; flex-shrink: 0; opacity: 0; transition: opacity 0.2s ease; }
-.floatnav:hover .floatnav-tabs, .floatnav:focus-within .floatnav-tabs, .floatnav.expanded .floatnav-tabs { opacity: 1; transition-delay: 0.18s; }
+.floatnav-zone:hover .floatnav-tabs, .floatnav:focus-within .floatnav-tabs, .floatnav.expanded .floatnav-tabs { opacity: 1; transition-delay: 0.18s; }
 .tab {
   background: transparent;
   border: 1px solid transparent;
@@ -129,15 +156,79 @@ button { font-family: inherit; }
 .status-dot.degraded { background: var(--amber); }
 .status-dot.down { background: var(--coral); }
 .status-label-text { opacity: 0; transition: opacity 0.2s ease; }
-.floatnav:hover .status-label-text, .floatnav:focus-within .status-label-text, .floatnav.expanded .status-label-text { opacity: 1; transition-delay: 0.2s; }
+.floatnav-zone:hover .status-label-text, .floatnav:focus-within .status-label-text, .floatnav.expanded .status-label-text { opacity: 1; transition-delay: 0.2s; }
 
-main { max-width: 1180px; margin: 0 auto; padding: 108px 28px 60px; }
-.view { padding-top: 4px; }
+/* main has no background of its own; its padding/gutters must not block drags on the bg map behind it */
+main { max-width: 1180px; margin: 0 auto; padding: 108px 28px 60px; pointer-events: none; }
+.view { padding-top: 4px; pointer-events: none; }
 .view.hidden { display: none; }
+/* Only the create tab needs a pass-through gap (for the bg map); other tabs are fully interactive. */
+#view-datasets > *, #view-live > * { pointer-events: auto; }
 
-.create-view-sections { display: flex; flex-direction: column; gap: 28px; }
-.loc-section, .map-section, .config-section { width: 100%; border-radius: var(--radius); }
-.loc-section, .config-section { padding: 24px; }
+/* Desktop: lokasi (scrollable) | peta (transparent gap onto the full-screen bg map) | konfigurasi (scrollable) */
+.create-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) 1fr minmax(300px, 380px);
+  gap: 28px;
+  align-items: start;
+  pointer-events: none;
+}
+.create-grid .loc-section, .create-grid .config-section { pointer-events: auto; }
+.loc-section, .config-section { width: 100%; border-radius: var(--radius); padding: 24px; }
+.loc-section, .config-section {
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: sticky;
+  top: 0;
+}
+.map-gap {
+  min-height: 540px;
+  pointer-events: none;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: calc(100vh - 150px);
+  border-radius: var(--radius);
+  border: 2px solid transparent;
+  background: rgba(231,236,245,0.08);
+  box-shadow:
+    inset -4px -4px 10px rgba(0,0,0,0.25),
+    inset 4px 4px 10px rgba(255,255,255,0.06);
+}
+.map-gap::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: var(--glass-grad);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ---- Themed scrollbars: thin cyan capsule on the side panels, echoing the map's accent ---- */
+.loc-section, .config-section {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(53,208,192,0.5) transparent;
+}
+.loc-section::-webkit-scrollbar, .config-section::-webkit-scrollbar { width: 6px; }
+.loc-section::-webkit-scrollbar-track, .config-section::-webkit-scrollbar-track { background: transparent; }
+.loc-section::-webkit-scrollbar-thumb, .config-section::-webkit-scrollbar-thumb {
+  background: rgba(53,208,192,0.45);
+  border-radius: 999px;
+}
+.loc-section::-webkit-scrollbar-thumb:hover, .config-section::-webkit-scrollbar-thumb:hover {
+  background: rgba(53,208,192,0.7);
+}
+
+@media (max-width: 1000px) {
+  .create-grid { display: flex; flex-direction: column; gap: 28px; }
+  .loc-section, .config-section { max-height: none; overflow: visible; position: static; }
+  .map-gap, .map-ui { display: none; }
+}
 .section-title { font-size: 13px; font-weight: 700; margin: 0 0 18px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); text-shadow: 0 1px 8px rgba(0,0,0,0.4); }
 
 .panel {
@@ -195,7 +286,7 @@ details.advanced .field-row-3 { margin-top: 14px; }
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s;
 }
-.region-card:hover { background: rgba(53,208,192,0.10); }
+.region-card:hover { background: rgba(53,208,192,0.10); box-shadow: 0 0 18px rgba(53,208,192,0.25); }
 .region-card.selected { background: rgba(53,208,192,0.20); box-shadow: 0 0 12px rgba(53,208,192,0.3), inset -4px -4px 10px rgba(0,0,0,0.35), inset 4px 4px 10px rgba(255,255,255,0.05); }
 .region-name { font-size: 13px; font-weight: 600; }
 .region-area { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
@@ -216,50 +307,54 @@ details.advanced .field-row-3 { margin-top: 14px; }
   font-size: 14px;
   font-family: inherit;
 }
-.map-frame {
-  position: relative;
-  width: 100%;
-  height: 460px;
-  border-radius: 16px;
-  overflow: hidden;
-  isolation: isolate;
-}
-.location-map { position: absolute; inset: 0; background: var(--panel); }
-.location-map .leaflet-control-container { z-index: 5; }
+/* ---- Map is the whole app's background now: floating UI anchored to the viewport, no boxed frame ---- */
+.map-ui { pointer-events: none; }
+.map-ui.hidden { display: none; }
 
-.map-placeholder {
-  position: absolute;
-  inset: 0;
-  z-index: 800;
+.map-hint-chip {
+  position: fixed;
+  top: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
+  max-width: min(84vw, 400px);
   text-align: center;
-  padding: 20px;
-  background:
-    repeating-linear-gradient(45deg, rgba(255,255,255,0.03) 0 2px, transparent 2px 14px),
-    var(--panel);
-  color: var(--text-dim);
-  font-size: 13px;
-  letter-spacing: 0.02em;
-  transition: opacity 0.4s ease;
   pointer-events: none;
 }
-.map-placeholder.hidden { opacity: 0; }
+.map-hint-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.map-hint-sub {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+.map-hint-sub .val { color: var(--cyan); }
 
 .map-selection-box {
-  position: absolute;
-  z-index: 900;
-  left: 50%; top: 50%;
+  display: none;
+  position: fixed;
+  z-index: 4;
   width: 220px; height: 160px;
-  transform: translate(-50%, -50%);
   border: 2px dashed rgba(231,236,245,0.5);
   background: rgba(231,236,245,0.06);
   border-radius: 4px;
   cursor: grab;
   box-shadow: 0 0 0 2000px rgba(6,9,16,0.28);
+  pointer-events: auto;
 }
 .map-selection-box.active {
+  display: block;
   border: 2px solid var(--cyan);
   background: rgba(53,208,192,0.12);
   box-shadow: 0 0 0 2000px rgba(6,9,16,0.18), 0 0 16px rgba(53,208,192,0.35);
@@ -272,14 +367,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
   border-radius: 2px;
   pointer-events: none;
 }
-.map-bbox-readout {
-  margin-top: 10px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-dim);
-  letter-spacing: 0.02em;
-}
-.map-bbox-readout .val { color: var(--cyan); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -383,7 +470,7 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .dot.ok { background: var(--cyan); }
 .dot.muted { background: var(--hairline); }
 
-.modal-overlay { position: fixed; inset: 0; background: rgba(6,9,16,0.55); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(6,9,16,0.55); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 50; pointer-events: auto; }
 .modal-overlay.hidden { display: none; }
 .modal {
   border-radius: var(--radius);
@@ -396,7 +483,7 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .modal-check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 18px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-.toast-stack { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 10px; z-index: 60; }
+.toast-stack { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 10px; z-index: 60; pointer-events: auto; }
 .toast {
   font-size: 13px; padding: 12px 16px; border-radius: 8px;
   min-width: 240px; max-width: 360px;

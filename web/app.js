@@ -86,6 +86,8 @@ function tierCompletionRatios(scenes, requiredTiers) {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('hidden', v.id !== ('view-' + name)));
+  document.getElementById('mapUI').classList.toggle('hidden', name !== 'create');
+  if (name === 'create' && bgMap) requestAnimationFrame(() => { bgMap.invalidateSize(); positionMapHint(); if (selectedBBox) fitBBoxToGap(selectedBBox, false); });
   if (name === 'datasets') { loadDatasets(); startDatasetPolling(); } else { stopDatasetPolling(); }
   if (name === 'live') { loadLive(); startLivePolling(); } else { stopLivePolling(); }
 }
@@ -116,60 +118,101 @@ document.getElementById('tierAll').addEventListener('change', (e) => {
 const COLOR_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
 const COLOR_TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, Intermap, NRCan, METI, OpenStreetMap contributors, GIS User Community';
 
-let locationMap = null;
 let mapActivated = false;
 let selectedBBox = null; // [minLon, minLat, maxLon, maxLat]
 let boxDrag = null;
+const DEFAULT_HINT = 'Pilih lokasi atau seret peta untuk mengubah area';
 
-function initLocationMap() {
-  locationMap = L.map('locationMap', { zoomControl: true, attributionControl: false }).setView([-6.3, 106.9], 9);
-  locationMap.on('move zoom', syncSelectionBoxFromBBox);
-  window.addEventListener('resize', () => locationMap.invalidateSize());
+// The map is the whole app's background: #bgMap fills the viewport and is fully interactive
+// (drag/zoom it and that IS the page background moving). The "peta wilayah" column in the
+// create-dataset grid is just a transparent gap that reveals it; fitBounds/box math below
+// account for that gap so the selection stays visible in it instead of hiding under the cards.
+let bgMap = null;
+function initBgMap() {
+  bgMap = L.map('bgMap', {
+    zoomControl: false,
+    attributionControl: false,
+    dragging: true,
+    scrollWheelZoom: true,
+    doubleClickZoom: true,
+    boxZoom: false,
+    keyboard: false,
+    touchZoom: true,
+    tap: false
+  }).setView([-6.28, 106.85], 10);
+  L.tileLayer(COLOR_TILE_URL, { maxZoom: 19, attribution: COLOR_TILE_ATTR }).addTo(bgMap);
+  bgMap.on('move zoom', syncSelectionBoxFromBBox);
+  window.addEventListener('resize', () => {
+    bgMap.invalidateSize();
+    positionMapHint();
+    if (selectedBBox) fitBBoxToGap(selectedBBox, false);
+  });
   initSelectionBoxDrag();
-  requestAnimationFrame(() => locationMap.invalidateSize());
+  requestAnimationFrame(() => { bgMap.invalidateSize(); positionMapHint(); });
 }
+initBgMap();
 
 function activateMap() {
-  if (mapActivated) return;
   mapActivated = true;
-  L.tileLayer(COLOR_TILE_URL, { maxZoom: 19, attribution: COLOR_TILE_ATTR }).addTo(locationMap);
-  document.getElementById('mapPlaceholder').classList.add('hidden');
   document.getElementById('mapSelectionBox').classList.add('active');
 }
 
+function getMapGapRect() {
+  const gap = document.getElementById('mapGap');
+  if (!gap || gap.offsetWidth === 0) return null;
+  return gap.getBoundingClientRect();
+}
+
+function positionMapHint() {
+  const chip = document.getElementById('mapHintChip');
+  const r = getMapGapRect();
+  if (!chip || !r) return;
+  chip.style.left = (r.left + r.width / 2) + 'px';
+}
+
+function fitBBoxToGap(bbox, animate) {
+  const minLon = bbox[0], minLat = bbox[1], maxLon = bbox[2], maxLat = bbox[3];
+  const r = getMapGapRect();
+  const opts = { animate: animate !== false };
+  if (r) {
+    opts.paddingTopLeft = [Math.max(20, r.left + 20), Math.max(20, r.top + 20)];
+    opts.paddingBottomRight = [Math.max(20, window.innerWidth - r.right + 20), Math.max(20, window.innerHeight - r.bottom + 20)];
+  } else {
+    opts.padding = [24, 24];
+  }
+  bgMap.fitBounds([[minLat, minLon], [maxLat, maxLon]], opts);
+}
+
 function updateMapPreview(bbox) {
-  if (!locationMap) initLocationMap();
   activateMap();
   selectedBBox = bbox.slice();
-  locationMap.invalidateSize();
-  const minLon = bbox[0], minLat = bbox[1], maxLon = bbox[2], maxLat = bbox[3];
-  locationMap.fitBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [24, 24] });
+  bgMap.invalidateSize();
+  positionMapHint();
+  fitBBoxToGap(selectedBBox, true);
   syncSelectionBoxFromBBox();
   renderBBoxReadout();
   setTimeout(() => {
-    if (!locationMap) return;
-    locationMap.invalidateSize();
-    locationMap.fitBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [24, 24], animate: false });
+    bgMap.invalidateSize();
+    fitBBoxToGap(selectedBBox, false);
     syncSelectionBoxFromBBox();
   }, 200);
 }
 
 function clearMapPreview() {
   selectedBBox = null;
-  document.getElementById('mapBboxReadout').textContent = '';
+  mapActivated = false;
+  document.getElementById('mapBboxReadout').textContent = DEFAULT_HINT;
   const box = document.getElementById('mapSelectionBox');
   box.classList.remove('active');
-  box.style.transform = ''; box.style.left = ''; box.style.top = ''; box.style.width = ''; box.style.height = '';
-  if (locationMap) locationMap.setView([-6.3, 106.9], 9);
+  box.style.left = ''; box.style.top = ''; box.style.width = ''; box.style.height = '';
 }
 
 function syncSelectionBoxFromBBox() {
-  if (!selectedBBox || !locationMap) return;
+  if (!selectedBBox) return;
   const box = document.getElementById('mapSelectionBox');
   const minLon = selectedBBox[0], minLat = selectedBBox[1], maxLon = selectedBBox[2], maxLat = selectedBBox[3];
-  const p1 = locationMap.latLngToContainerPoint([maxLat, minLon]);
-  const p2 = locationMap.latLngToContainerPoint([minLat, maxLon]);
-  box.style.transform = 'none';
+  const p1 = bgMap.latLngToContainerPoint([maxLat, minLon]);
+  const p2 = bgMap.latLngToContainerPoint([minLat, maxLon]);
   box.style.left = Math.min(p1.x, p2.x) + 'px';
   box.style.top = Math.min(p1.y, p2.y) + 'px';
   box.style.width = Math.max(24, Math.abs(p2.x - p1.x)) + 'px';
@@ -195,8 +238,8 @@ function initSelectionBoxDrag() {
     if (!boxDrag) return;
     const dx = e.clientX - boxDrag.startX;
     const dy = e.clientY - boxDrag.startY;
-    const origin = locationMap.latLngToContainerPoint([boxDrag.startBBox[1], boxDrag.startBBox[0]]);
-    const shifted = locationMap.containerPointToLatLng([origin.x + dx, origin.y + dy]);
+    const origin = bgMap.latLngToContainerPoint([boxDrag.startBBox[1], boxDrag.startBBox[0]]);
+    const shifted = bgMap.containerPointToLatLng([origin.x + dx, origin.y + dy]);
     const lonDelta = shifted.lng - boxDrag.startBBox[0];
     const latDelta = shifted.lat - boxDrag.startBBox[1];
     selectedBBox = [
@@ -214,24 +257,6 @@ function initSelectionBoxDrag() {
   box.addEventListener('pointerup', endDrag);
   box.addEventListener('pointercancel', endDrag);
 }
-
-let bgMap = null;
-function initBgMap() {
-  bgMap = L.map('bgMap', {
-    zoomControl: false,
-    attributionControl: false,
-    dragging: false,
-    scrollWheelZoom: false,
-    doubleClickZoom: false,
-    boxZoom: false,
-    keyboard: false,
-    touchZoom: false,
-    tap: false
-  }).setView([-6.28, 106.85], 10);
-  L.tileLayer(COLOR_TILE_URL, { maxZoom: 19, attribution: COLOR_TILE_ATTR }).addTo(bgMap);
-  window.addEventListener('resize', () => bgMap.invalidateSize());
-}
-initBgMap();
 
 function renderRegionCards() {
   const grid = document.getElementById('regionGrid');
@@ -276,8 +301,6 @@ document.getElementById('fLocation').addEventListener('input', () => {
     if (val === '') clearMapPreview();
   }
 });
-
-initLocationMap();
 
 async function loadRegions() {
   try {

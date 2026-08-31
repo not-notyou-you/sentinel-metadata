@@ -17,49 +17,51 @@
 <div id="bgMap"></div>
 <div id="bgOverlay"></div>
 
-<nav class="floatnav" id="floatNav" tabindex="0">
-  <div class="floatnav-brand">
-    <img class="brand-mark" src="logo.webp" alt="Sentinel Sentinel">
-    <div class="brand-text">
-      <span class="brand-name">SENTINEL SENTINEL</span>
-      <span class="brand-sub">Konsol Data Banjir — Jabodetabek</span>
+<div class="map-ui hidden" id="mapUI">
+  <div class="map-hint-chip" id="mapHintChip">
+    <span class="map-hint-title">Peta Wilayah</span>
+    <span class="map-hint-sub" id="mapBboxReadout">Pilih lokasi atau seret peta untuk mengubah area</span>
+  </div>
+  <div class="map-selection-box" id="mapSelectionBox"></div>
+</div>
+
+<div class="floatnav-zone" id="floatNavZone">
+  <nav class="floatnav" id="floatNav" tabindex="0">
+    <div class="floatnav-brand">
+      <img class="brand-mark" src="logo.webp" alt="Sentinel Sentinel">
+      <div class="brand-text">
+        <span class="brand-name">SENTINEL SENTINEL</span>
+        <span class="brand-sub">Konsol Data Banjir — Jabodetabek</span>
+      </div>
     </div>
-  </div>
-  <div class="floatnav-tabs">
-    <button class="tab active" data-tab="create">Buat Dataset</button>
-    <button class="tab" data-tab="datasets">Dataset Saya</button>
-    <button class="tab" data-tab="live">Live</button>
-  </div>
-  <div class="status">
-    <span class="status-dot" id="statusDot"></span>
-    <span id="statusLabel" class="status-label-text">Menghubungkan...</span>
-  </div>
-</nav>
+    <div class="floatnav-tabs">
+      <button class="tab active" data-tab="create">Buat Dataset</button>
+      <button class="tab" data-tab="datasets">Dataset Saya</button>
+      <button class="tab" data-tab="live">Live</button>
+    </div>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusLabel" class="status-label-text">Menghubungkan...</span>
+    </div>
+  </nav>
+</div>
 
 <main>
 
   <section class="view" id="view-create">
-    <div class="create-view-sections">
+    <div class="create-grid">
 
       <section class="loc-section">
-        <p class="section-title">1 · Pilih Lokasi</p>
+        <p class="section-title">Pilih Lokasi</p>
         <div class="region-grid" id="regionGrid"></div>
         <label class="location-input-label" for="fLocation">Atau cari lokasi lain</label>
         <input type="text" id="fLocation" placeholder="Cari atau masukkan nama lokasi, mis. Cibubur, Cikarang..." required>
       </section>
 
-      <section class="map-section">
-        <p class="section-title">2 · Peta Wilayah</p>
-        <div class="map-frame">
-          <div class="location-map" id="locationMap"></div>
-          <div class="map-placeholder" id="mapPlaceholder">Pilih lokasi di atas untuk menampilkan peta wilayah</div>
-          <div class="map-selection-box" id="mapSelectionBox"></div>
-        </div>
-        <p class="map-bbox-readout" id="mapBboxReadout"></p>
-      </section>
+      <div class="map-gap" id="mapGap"></div>
 
       <section class="config-section">
-        <p class="section-title">3 · Konfigurasi</p>
+        <p class="section-title">Konfigurasi</p>
         <form id="createForm">
           <div class="field-row">
             <div class="field">
