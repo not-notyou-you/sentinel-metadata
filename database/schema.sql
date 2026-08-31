@@ -19,7 +19,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    CREATE TYPE product_tier_enum      AS ENUM ('RAW', 'BRONZE', 'SILVER', 'GOLD');
+    CREATE TYPE product_tier_enum      AS ENUM ('RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -59,19 +59,27 @@ CREATE TABLE IF NOT EXISTS regions_of_interest (
     admin_level        SMALLINT        NOT NULL DEFAULT 2,     -- 1=national, 2=province, 3=city
     country_code       CHAR(2)         NOT NULL DEFAULT 'ID',
     is_active          BOOLEAN         NOT NULL DEFAULT TRUE,
+    source             VARCHAR(20)     NOT NULL DEFAULT 'USER',  -- SEEDER | USER | GEOCODE
+    deleted_at         TIMESTAMPTZ,                            -- NULL = aktif (soft-delete)
     created_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    updated_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_roi_source CHECK (source IN ('SEEDER', 'USER', 'GEOCODE'))
 );
 
--- Indexes: region_code lookup, spatial query, active filter
+-- Indexes: region_code lookup, spatial query, active filter, name search
 CREATE INDEX IF NOT EXISTS idx_roi_region_code  ON regions_of_interest (region_code);
 CREATE INDEX IF NOT EXISTS idx_roi_bbox         ON regions_of_interest USING GIST (bbox);
 CREATE INDEX IF NOT EXISTS idx_roi_is_active    ON regions_of_interest (is_active) WHERE is_active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_roi_admin_level  ON regions_of_interest (admin_level);
+CREATE INDEX IF NOT EXISTS idx_roi_name_lower   ON regions_of_interest (lower(name));
+CREATE INDEX IF NOT EXISTS idx_roi_source       ON regions_of_interest (source);
+CREATE INDEX IF NOT EXISTS idx_roi_not_deleted  ON regions_of_interest (deleted_at) WHERE deleted_at IS NULL;
 
 COMMENT ON TABLE  regions_of_interest IS 'Master table of geographic Areas of Interest (AOI) for Sentinel-1 acquisition coverage.';
 COMMENT ON COLUMN regions_of_interest.bbox IS 'WGS84 polygon bounding box, stored as PostGIS geometry for spatial queries.';
 COMMENT ON COLUMN regions_of_interest.admin_level IS '1=national, 2=province/region, 3=city/district level granularity.';
+COMMENT ON COLUMN regions_of_interest.source IS 'SEEDER = bawaan sistem (tidak bisa dihapus), USER = ditambahkan lewat UI, GEOCODE = auto-dibuat location_resolver dari Nominatim.';
+COMMENT ON COLUMN regions_of_interest.deleted_at IS 'Waktu soft-delete. NULL = aktif. Baris tidak pernah dihapus fisik karena satellite_scenes/datasets mereferensikan region_id (ON DELETE RESTRICT).';
 
 -- =============================================================================
 -- TABLE 2: PROCESSING_STAGES
@@ -219,9 +227,10 @@ CREATE TABLE IF NOT EXISTS data_products (
     product_uuid       UUID                NOT NULL DEFAULT uuid_generate_v4() UNIQUE,
     scene_id           INTEGER             NOT NULL REFERENCES satellite_scenes(scene_id) ON DELETE CASCADE,
     job_id             BIGINT              NOT NULL REFERENCES processing_jobs(job_id) ON DELETE RESTRICT,
-    product_tier       product_tier_enum   NOT NULL,              -- RAW/BRONZE/SILVER/GOLD
+    product_tier       product_tier_enum   NOT NULL,              -- RAW/BRONZE/SILVER/GOLD/FUSION
+    source             VARCHAR(20)         NOT NULL DEFAULT 'SENTINEL1',  -- SENTINEL1 | MODIS | GPM | FUSION
     product_type       VARCHAR(50)         NOT NULL,              -- 'CROPPED_TIFF', 'LEE_FILTERED', 'COG', etc.
-    band_name          VARCHAR(10)         NOT NULL,              -- 'VV', 'VH', 'VV_VH'
+    band_name          VARCHAR(10)         NOT NULL,              -- 'VV', 'VH', 'NDVI', 'RAIN_24H'
     file_name          VARCHAR(255)        NOT NULL,
     file_path          TEXT                NOT NULL,
     file_size_mb       NUMERIC(12,3)       NOT NULL,
@@ -237,7 +246,8 @@ CREATE TABLE IF NOT EXISTS data_products (
     is_valid           BOOLEAN             NOT NULL DEFAULT TRUE,
     is_latest          BOOLEAN             NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
-    updated_at         TIMESTAMPTZ         NOT NULL DEFAULT NOW()
+    updated_at         TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_dprods_source CHECK (source IN ('SENTINEL1', 'MODIS', 'GPM', 'FUSION'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_dprods_scene_id    ON data_products (scene_id);
@@ -246,10 +256,13 @@ CREATE INDEX IF NOT EXISTS idx_dprods_tier        ON data_products (product_tier
 CREATE INDEX IF NOT EXISTS idx_dprods_hash        ON data_products (data_hash_sha256);
 CREATE INDEX IF NOT EXISTS idx_dprods_latest      ON data_products (is_latest, product_tier) WHERE is_latest = TRUE;
 CREATE INDEX IF NOT EXISTS idx_dprods_created_at  ON data_products (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dprods_tier_source ON data_products (product_tier, source);
+CREATE INDEX IF NOT EXISTS idx_dprods_dataset_tier_source ON data_products (dataset_id, product_tier, source) WHERE is_latest = TRUE;
 
 COMMENT ON TABLE  data_products IS 'Output artifact registry. Tracks every file produced by each ETL stage (COG, filtered TIFF, etc.).';
 COMMENT ON COLUMN data_products.data_hash_sha256 IS 'SHA-256 hash of file content. Used for deduplication and integrity validation.';
-COMMENT ON COLUMN data_products.product_tier IS 'Lakehouse tier: RAW (original), BRONZE (ingested), SILVER (processed), GOLD (analytics-ready).';
+COMMENT ON COLUMN data_products.product_tier IS 'Lakehouse tier: RAW (original), BRONZE (cropped ke AOI), SILVER (processed per-source), GOLD (analysis-ready per-source COG), FUSION (HDF5 multi-modal gabungan).';
+COMMENT ON COLUMN data_products.source IS 'Sensor asal produk: SENTINEL1 | MODIS | GPM, atau FUSION untuk stack gabungan. Sama dengan level {source} di path on-disk (etl/folder_manager.py).';
 
 -- =============================================================================
 -- TABLE 6: QUALITY_METRICS
@@ -551,7 +564,9 @@ VALUES
     ('LEE_FILTER',        'LF',  3, 'SAR speckle reduction using Lee adaptive filter',            45,  2, 30),
     ('COG_EXPORT',        'CE',  4, 'Cloud-Optimized GeoTIFF normalization and export',           30,  2, 30),
     ('ORCHESTRATE',       'OR',  5, 'Pipeline orchestration, checkpointing, and retry management', 10,  1, 10),
-    ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30)
+    ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30),
+    ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM)', 60, 2, 30),
+    ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30)
 ON CONFLICT (stage_name) DO NOTHING;
 
 -- Seed: Default processing rules per stage

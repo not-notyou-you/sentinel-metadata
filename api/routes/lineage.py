@@ -11,15 +11,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.schemas import LineageResponse, LineageStep
+from api.deps import get_db
 from etl.database_client import DataProduct, DatabaseClient
 from etl.lineage_tracker import LineageTracker
 
 router = APIRouter()
-
-
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
 
 
 @router.get(
@@ -34,7 +30,7 @@ async def _get_db() -> DatabaseClient:
 )
 async def get_lineage(
     product_id: int,
-    db:         DatabaseClient = Depends(_get_db),
+    db:         DatabaseClient = Depends(get_db),
     direction:  str            = Query(
         "ancestors",
         pattern="^(ancestors|descendants)$",

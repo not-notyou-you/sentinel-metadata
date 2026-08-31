@@ -8,14 +8,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 
 from api.schemas import HealthResponse
+from api.deps import get_db
 from etl.database_client import DatabaseClient
 
 router = APIRouter()
-
-
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
 
 
 @router.get(
@@ -24,7 +20,7 @@ async def _get_db() -> DatabaseClient:
     summary="Health check",
     description="Returns database connectivity status and connection pool statistics.",
 )
-async def health_check(db: DatabaseClient = Depends(_get_db)) -> HealthResponse:
+async def health_check(db: DatabaseClient = Depends(get_db)) -> HealthResponse:
     info = db.check_health()
     return HealthResponse(
         status        = "ok" if info.get("connected") else "degraded",

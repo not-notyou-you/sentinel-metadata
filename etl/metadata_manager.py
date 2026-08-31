@@ -16,6 +16,7 @@ from etl.database_client import (
     NasaScene,
     ProcessingJob,
     ProcessingStage,
+    ProductSourceEnum,
     ProductTierEnum,
     QualityMetric,
     SatelliteScene,
@@ -173,6 +174,7 @@ class MetadataManager:
         scene_id: int,
         job_id: int,
         product_tier: str,
+        source: str,
         product_type: str,
         band_name: str,
         file_path: str,
@@ -205,6 +207,7 @@ class MetadataManager:
                 job_id=job_id,
                 dataset_id=dataset_id,
                 product_tier=ProductTierEnum(product_tier),
+                source=ProductSourceEnum(source).value,
                 product_type=product_type,
                 band_name=band_name,
                 file_name=file_name,
@@ -226,9 +229,32 @@ class MetadataManager:
             sess.flush()
             product_id = product.product_id
 
-        logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s dataset=%s file=%s",
-                    product_id, scene_id, band_name, product_tier, dataset_id, file_name)
+        logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s source=%s dataset=%s file=%s",
+                    product_id, scene_id, band_name, product_tier, source, dataset_id, file_name)
         return product_id
+
+    def mark_products_invalid_by_paths(self, dataset_id: int | None, paths: list[str]) -> int:
+        """Tandai is_valid=False untuk produk yang file-nya baru dihapus,
+        dicocokkan lewat file_path.
+
+        Dipakai cleanup tier parsial. mark_products_invalid() di bawah
+        mencocokkan lewat scene_id, yang tidak cukup untuk produk aux
+        MODIS/GPM: file-nya ditulis saat memproses satu scene Sentinel-1,
+        tapi barisnya menempel ke SatelliteScene placeholder per-tanggal
+        (module9_fusion._resolve_aux_scene), bukan ke scene S1 itu."""
+        if not paths:
+            return 0
+        with self._db.session() as sess:
+            stmt = select(DataProduct).where(DataProduct.file_path.in_(paths))
+            if dataset_id is not None:
+                stmt = stmt.where(DataProduct.dataset_id == dataset_id)
+            rows = sess.scalars(stmt).all()
+            for r in rows:
+                r.is_valid = False
+            count = len(rows)
+        logger.info("[PRODUCT] %d produk dataset=%s ditandai is_valid=False (file dihapus)",
+                    count, dataset_id)
+        return count
 
     def mark_products_invalid(self, scene_id: int, dataset_id: int | None, tier: str) -> None:
         with self._db.session() as sess:
@@ -370,18 +396,20 @@ class MetadataManager:
 
             results = []
             for row in rows:
-                has_gold = sess.scalar(
+                # Deliverable terakhir pipeline sekarang tier FUSION, bukan
+                # GOLD (GOLD kini produk per-source, bukan ujung pipeline).
+                has_final = sess.scalar(
                     select(func.count(DataProduct.product_id)).where(
                         and_(
                             DataProduct.scene_id == row.scene_id,
-                            DataProduct.product_tier == ProductTierEnum.GOLD,
+                            DataProduct.product_tier == ProductTierEnum.FUSION,
                             DataProduct.is_latest == True,
                             DataProduct.is_valid == True,
                         )
                     )
                 ) > 0
 
-                if only_unprocessed and has_gold:
+                if only_unprocessed and has_final:
                     continue
 
                 results.append({

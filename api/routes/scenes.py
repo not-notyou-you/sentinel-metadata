@@ -21,6 +21,7 @@ from api.schemas import (
     SceneListItem,
     SceneListResponse,
 )
+from api.deps import get_db
 from etl.database_client import (
     DataProduct,
     DatabaseClient,
@@ -34,11 +35,6 @@ router  = APIRouter()
 logger  = logging.getLogger(__name__)
 
 
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
-
-
 @router.get(
     "",
     response_model=SceneListResponse,
@@ -49,7 +45,7 @@ async def _get_db() -> DatabaseClient:
     ),
 )
 async def list_scenes(
-    db:              DatabaseClient = Depends(_get_db),
+    db:              DatabaseClient = Depends(get_db),
     region_id:       int | None     = Query(None,  description="Filter by region_id"),
     orbit_direction: str | None     = Query(None,  description="ASCENDING or DESCENDING"),
     date_from:       datetime | None = Query(None, description="Acquisition from (UTC ISO)"),
@@ -125,7 +121,7 @@ async def list_scenes(
 )
 async def get_scene(
     scene_id: int,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> SceneDetail:
     meta = MetadataManager(db)
     scene = meta.get_scene_by_id(scene_id)
@@ -169,7 +165,7 @@ async def get_scene(
 )
 async def get_pipeline_status(
     scene_id: int,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> PipelineStatusResponse:
     meta   = MetadataManager(db)
     stages = meta.get_pipeline_status(scene_id)

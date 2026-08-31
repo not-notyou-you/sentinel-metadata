@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select, and_
 
+from api.deps import get_db
 from etl.database_client import (
     DataProduct,
     DatabaseClient,
@@ -30,11 +31,6 @@ from etl.database_client import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
 
 
 def _generate_thumbnail(
@@ -141,7 +137,7 @@ def _generate_thumbnail(
     ),
 )
 async def get_latest_previews(
-    db:    DatabaseClient = Depends(_get_db),
+    db:    DatabaseClient = Depends(get_db),
     limit: int            = Query(5, ge=1, le=20, description="Jumlah scene terbaru (1-20)"),
     band:  str            = Query("VV", pattern="^(VV|VH)$", description="Band yang ditampilkan"),
 ) -> JSONResponse:
@@ -221,7 +217,7 @@ async def get_latest_previews(
 )
 async def get_product_thumbnail(
     product_id: int,
-    db:         DatabaseClient = Depends(_get_db),
+    db:         DatabaseClient = Depends(get_db),
     width:      int            = Query(400, ge=100, le=2000, description="Lebar thumbnail (pixel)"),
     band:       str            = Query("VV", pattern="^(VV|VH)$"),
 ) -> Response:

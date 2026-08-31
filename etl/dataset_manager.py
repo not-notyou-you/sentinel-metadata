@@ -13,18 +13,22 @@ from etl.database_client import (
     SatelliteScene,
     SceneJobState,
 )
-from etl.location_resolver import resolve_location
+from etl.location_resolver import resolve_location, resolve_region_id
 
 logger = logging.getLogger(__name__)
 
-TIER_ORDER = ["RAW", "BRONZE", "SILVER", "GOLD"]
+TIER_ORDER = ["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"]
 
+# Tahap pipeline -> index tier tertinggi yang dibutuhkan tahap itu.
+# QUALITY_ANALYTICS membaca SILVER (bukan menghasilkan tier baru), jadi
+# index-nya sama dengan LEE_FILTER.
 STAGE_TIER_INDEX = {
     "DOWNLOAD": 0,
     "CROP": 1,
     "LEE_FILTER": 2,
     "QUALITY_ANALYTICS": 2,
-    "FUSION": 3,
+    "GOLD_EXPORT": 3,
+    "FUSION": 4,
 }
 
 _active_threads: dict[str, threading.Thread] = {}
@@ -100,16 +104,24 @@ class DatasetManager:
 
     def create_dataset(
         self,
-        location: str,
         date_start: date,
         date_end: date,
         tiers: list[str],
         name: str,
+        location: str | None = None,
+        region_id: int | None = None,
         description: str | None = None,
         quality_settings: dict | None = None,
     ) -> dict:
         normalized_tiers = _normalize_tiers(tiers)
-        bbox_wkt, region_id, location_label = resolve_location(self._db, location)
+        # region_id = lokasi dipilih dari tabel (jalur UI). location = nama bebas
+        # (pemanggil lama/CLI), di-resolve lewat nama lalu geocoding.
+        if region_id is not None:
+            bbox_wkt, region_id, location_label = resolve_region_id(self._db, region_id)
+        elif location and location.strip():
+            bbox_wkt, region_id, location_label = resolve_location(self._db, location)
+        else:
+            raise ValueError("Lokasi belum dipilih: isi region_id atau location")
         with self._db.session() as sess:
             dataset = Dataset(
                 name=name,
@@ -417,14 +429,17 @@ class DatasetManager:
         deleted_files = 0
         if cascade_delete:
             from etl.deletion_manager import DeletionManager
-            tier_result = DeletionManager(self._db, dataset_id, dataset_name).delete_tiers(["RAW", "BRONZE", "SILVER"])
+            # Sisakan GOLD + FUSION: keduanya deliverable, sisanya antara.
+            tier_result = DeletionManager(self._db, dataset_id, dataset_name).delete_tiers(
+                ["RAW", "BRONZE", "SILVER"]
+            )
             deleted_files = tier_result["deleted_count"]
 
         logger.info(
             "[DATASET] dataset_id=%d job_id=%d dibatalkan cascade_delete=%s deleted_files=%d",
             dataset_id, job_id, cascade_delete, deleted_files,
         )
-        return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": "GOLD"}
+        return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": "GOLD+FUSION"}
 
     def delete_dataset(self, dataset_id: int, force: bool = False) -> dict:
         with self._db.session() as sess:

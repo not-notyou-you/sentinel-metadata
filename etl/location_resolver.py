@@ -5,18 +5,32 @@ import logging
 from geoalchemy2.shape import to_shape
 from sqlalchemy import select
 from etl.database_client import DatabaseClient, RegionOfInterest
+from etl.geo_utils import geocode_search
 
 logger = logging.getLogger(__name__)
 
-_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_USER_AGENT = "sentinel-sentinel-flood-pipeline/1.0"
+
+def resolve_region_id(db: DatabaseClient, region_id: int) -> tuple[str, int, str]:
+    """Ambil bbox/label dari lokasi yang dipilih pengguna di UI.
+
+    Jalur utama sejak lokasi dikelola di tabel: UI mengirim region_id, jadi tidak
+    ada lagi pencocokan nama yang ambigu kalau ada dua lokasi bernama mirip.
+    """
+    with db.session() as sess:
+        region = sess.get(RegionOfInterest, region_id)
+        if region is None or not region.is_active or region.deleted_at is not None:
+            raise ValueError(f"Lokasi dengan id {region_id} tidak ditemukan atau sudah dihapus")
+        return to_shape(region.bbox).wkt, region.region_id, region.name
 
 
 def _match_known_region(db: DatabaseClient, location: str) -> tuple[str, int, str] | None:
     normalized = location.strip().lower()
     with db.session() as sess:
         rows = sess.scalars(
-            select(RegionOfInterest).where(RegionOfInterest.is_active == True)
+            select(RegionOfInterest).where(
+                RegionOfInterest.is_active == True,
+                RegionOfInterest.deleted_at.is_(None),
+            )
         ).all()
         for r in rows:
             if r.name.strip().lower() == normalized or r.region_code.strip().lower() == normalized:
@@ -26,40 +40,25 @@ def _match_known_region(db: DatabaseClient, location: str) -> tuple[str, int, st
 
 
 def _geocode_nominatim(location: str) -> tuple[str, str]:
-    import requests
-
-    params = {
-        "q": location,
-        "format": "json",
-        "limit": 1,
-        "polygon_geojson": 0,
-        "countrycodes": "id",
-    }
-    headers = {"User-Agent": _USER_AGENT}
-    resp = requests.get(_NOMINATIM_URL, params=params, headers=headers, timeout=15)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Geocoding gagal ({resp.status_code}) untuk lokasi: {location}")
-    results = resp.json()
+    results = geocode_search(location, limit=1)
     if not results:
         raise ValueError(f"Lokasi tidak ditemukan: {location}")
-    item = results[0]
-    south, north, west, east = [float(x) for x in item["boundingbox"]]
-    bbox_wkt = (
-        f"POLYGON(({west} {south}, {east} {south}, {east} {north}, "
-        f"{west} {north}, {west} {south}))"
-    )
-    label = item.get("display_name", location)
-    return bbox_wkt, label
+    return results[0]["bbox_wkt"], results[0]["display_name"]
 
 
 def _create_region_from_geocode(db: DatabaseClient, bbox_wkt: str, label: str, location: str) -> int:
     code = "AUTO" + hashlib.md5(bbox_wkt.encode()).hexdigest()[:12].upper()
     with db.session() as sess:
         existing = sess.scalar(
-            select(RegionOfInterest.region_id).where(RegionOfInterest.region_code == code)
+            select(RegionOfInterest).where(RegionOfInterest.region_code == code)
         )
         if existing:
-            return existing
+            # Lokasi hasil geocoding yang pernah di-soft-delete dihidupkan kembali,
+            # supaya tidak bentrok dengan UNIQUE(region_code) saat dipakai lagi.
+            if existing.deleted_at is not None or not existing.is_active:
+                existing.is_active = True
+                existing.deleted_at = None
+            return existing.region_id
         region = RegionOfInterest(
             region_code=code,
             name=label[:100],
@@ -68,6 +67,7 @@ def _create_region_from_geocode(db: DatabaseClient, bbox_wkt: str, label: str, l
             admin_level=3,
             country_code="ID",
             is_active=True,
+            source="GEOCODE",
         )
         sess.add(region)
         sess.flush()

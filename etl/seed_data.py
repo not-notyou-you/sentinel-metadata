@@ -142,7 +142,7 @@ def seed(db: DatabaseClient) -> dict:
     # RAW products (VV + VH)
     raw_vv_id = meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id,
-        product_tier=ProductTierEnum.RAW, product_type="ORIGINAL_TIFF",
+        product_tier=ProductTierEnum.RAW, source="SENTINEL1", product_type="ORIGINAL_TIFF",
         band_name="VV",
         file_path="/data/raw/S1A_20240115_VV.tif",
         file_name="S1A_20240115_VV.tif",
@@ -152,7 +152,7 @@ def seed(db: DatabaseClient) -> dict:
     )
     raw_vh_id = meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id,
-        product_tier=ProductTierEnum.RAW, product_type="ORIGINAL_TIFF",
+        product_tier=ProductTierEnum.RAW, source="SENTINEL1", product_type="ORIGINAL_TIFF",
         band_name="VH",
         file_path="/data/raw/S1A_20240115_VH.tif",
         file_name="S1A_20240115_VH.tif",
@@ -175,7 +175,7 @@ def seed(db: DatabaseClient) -> dict:
 
     bronze_vv_id = meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id,
-        product_tier=ProductTierEnum.BRONZE, product_type="CROPPED_TIFF",
+        product_tier=ProductTierEnum.BRONZE, source="SENTINEL1", product_type="CROPPED_TIFF",
         band_name="VV",
         file_path="/processed/bronze/1/S1A_20240115_VV_crop.tif",
         file_name="S1A_20240115_VV_crop.tif",
@@ -184,7 +184,7 @@ def seed(db: DatabaseClient) -> dict:
     )
     bronze_vh_id = meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id,
-        product_tier=ProductTierEnum.BRONZE, product_type="CROPPED_TIFF",
+        product_tier=ProductTierEnum.BRONZE, source="SENTINEL1", product_type="CROPPED_TIFF",
         band_name="VH",
         file_path="/processed/bronze/1/S1A_20240115_VH_crop.tif",
         file_name="S1A_20240115_VH_crop.tif",
@@ -212,7 +212,7 @@ def seed(db: DatabaseClient) -> dict:
 
     silver_vv_id = meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id,
-        product_tier=ProductTierEnum.SILVER, product_type="LEE_FILTERED",
+        product_tier=ProductTierEnum.SILVER, source="SENTINEL1", product_type="LEE_FILTERED",
         band_name="VV",
         file_path="/processed/silver/1/S1A_20240115_VV_lee.tif",
         file_name="S1A_20240115_VV_lee.tif",
@@ -221,7 +221,7 @@ def seed(db: DatabaseClient) -> dict:
     )
     silver_vh_id = meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id,
-        product_tier=ProductTierEnum.SILVER, product_type="LEE_FILTERED",
+        product_tier=ProductTierEnum.SILVER, source="SENTINEL1", product_type="LEE_FILTERED",
         band_name="VH",
         file_path="/processed/silver/1/S1A_20240115_VH_lee.tif",
         file_name="S1A_20240115_VH_lee.tif",
@@ -283,7 +283,7 @@ def seed(db: DatabaseClient) -> dict:
 
     gold_fusion_id = meta.insert_data_product(
         scene_id=scene_id, job_id=fusion_job_id,
-        product_tier=ProductTierEnum.GOLD, product_type="FUSION_H5",
+        product_tier=ProductTierEnum.FUSION, source="FUSION", product_type="FUSION_H5",
         band_name="FUSION",
         file_path="/processed/gold/1/fusion_20240115.h5",
         file_name="fusion_20240115.h5",
@@ -341,7 +341,12 @@ def verify_seed(db: DatabaseClient, ids: dict) -> None:
             {"jid": ids["fusion_job_id"]}
         )
         logger.info("[VERIFY] Lineage records for FUSION job: %d", lin_count)
-        assert lin_count == 2
+        # seed() memang boleh dijalankan berulang: scene dan job di-dedupe, tapi
+        # data_products selalu dibuat baru, sehingga job FUSION yang sama dapat
+        # tambahan baris lineage tiap run. Yang perlu dijamin adalah rantainya
+        # terbentuk (VV + VH -> fusion), bukan jumlah persisnya — sama seperti
+        # pemeriksaan gold_count di atas.
+        assert lin_count >= 2, f"Expected >=2 lineage records for FUSION job, got {lin_count}"
 
         # 4. Quality metrics
         qm_count = sess.scalar(
@@ -349,7 +354,8 @@ def verify_seed(db: DatabaseClient, ids: dict) -> None:
             {"sid": ids["scene_id"]}
         )
         logger.info("[VERIFY] Quality metrics for scene: %d", qm_count)
-        assert qm_count == 2
+        # Idem: tiap run menambah metrik VV + VH untuk scene yang sama.
+        assert qm_count >= 2, f"Expected >=2 quality metrics (VV+VH), got {qm_count}"
 
         # 5. All jobs succeeded
         failed_jobs = sess.scalar(

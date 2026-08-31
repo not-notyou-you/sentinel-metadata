@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
+from api.deps import get_db
 from etl.database_client import DatabaseClient, ProcessingJob, SatelliteScene
 from etl.dataset_manager import DatasetManager
 from etl.metadata_manager import MetadataManager
@@ -14,17 +15,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
-
-
 @router.get(
     "/status/current",
     summary="Status pipeline saat ini",
     description="Status tahap pipeline untuk scene yang paling baru diproses, dipakai untuk progress rail di beranda.",
 )
-async def current_pipeline_status(db: DatabaseClient = Depends(_get_db)) -> dict:
+async def current_pipeline_status(db: DatabaseClient = Depends(get_db)) -> dict:
     with db.session() as sess:
         latest_job = sess.execute(
             select(ProcessingJob).order_by(ProcessingJob.created_at.desc()).limit(1)
@@ -63,7 +59,7 @@ async def current_pipeline_status(db: DatabaseClient = Depends(_get_db)) -> dict
     summary="Retry job dataset yang gagal",
     description="Menjalankan ulang job pipeline terakhir untuk sebuah dataset, hanya jika job tersebut berstatus FAILED.",
 )
-async def trigger_pipeline(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> dict:
+async def trigger_pipeline(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
     mgr = DatasetManager(db)
     try:
         result = mgr.retry_dataset_job(dataset_id)

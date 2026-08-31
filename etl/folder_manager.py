@@ -6,19 +6,32 @@ Layout on-disk:
     data/datasets/{dataset_id}_{slug(dataset_name)}/
         metadata.json
         raw/
-            {scene}/
+            sentinel1/{scene}/          # .SAFE.zip + TIFF hasil ekstrak per band
+            modis/                      # cache granule .hdf mentah (flat, lintas tanggal)
+            gpm/                        # cache granule .nc4 mentah (flat, lintas tanggal)
         bronze/
-            {scene}/
+            sentinel1/{scene}/
         silver/
-            {scene}/
+            sentinel1/{scene}/
+            modis/{scene}/
+            gpm/{scene}/
         gold/
-            {scene}/
+            sentinel1/{scene}/
+            modis/{scene}/
+            gpm/{scene}/
+        fusion/
+            {scene}/                    # lintas-source, jadi tidak punya level source
 
 `{scene}` untuk file Sentinel-1 adalah product_identifier scene tersebut
 (sudah unik termasuk jam:menit:detik). Untuk artefak yang tidak terikat ke
-satu scene S1 tertentu (input fusion MODIS/GPM, dan output fusion GOLD yang
-di-dedup per tanggal — lihat module9_fusion.py), `{scene}` adalah tanggal
-akuisisi dalam format YYYYMMDD.
+satu scene S1 tertentu (MODIS/GPM harian, dan output fusion yang di-dedup per
+tanggal — lihat module9_fusion.py), `{scene}` adalah tanggal akuisisi dalam
+format YYYYMMDD.
+
+Level `{source}` ada di setiap tier kecuali `fusion`: tier fusion justru
+*gabungan* dari semua source, jadi memberinya satu folder source akan
+menyesatkan. Semua fungsi di sini menolak kombinasi tier/source yang tidak
+valid alih-alih diam-diam menulis ke tempat yang salah.
 """
 
 from __future__ import annotations
@@ -31,9 +44,35 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TIERS: tuple[str, ...] = ("raw", "bronze", "silver", "gold")
+TIERS: tuple[str, ...] = ("raw", "bronze", "silver", "gold", "fusion")
+
+SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
+
+# Tier fusion sengaja dipetakan ke tuple kosong: dia lintas-source.
+# bronze cuma dipakai Sentinel-1 (crop AOI) — MODIS/GPM langsung dari granule
+# mentah di raw/ ke produk harian di silver/, tanpa tahap crop terpisah.
+TIER_SOURCES: dict[str, tuple[str, ...]] = {
+    "raw": SOURCES,
+    "bronze": ("sentinel1",),
+    "silver": SOURCES,
+    "gold": SOURCES,
+    "fusion": (),
+}
+
+# Source yang file mentahnya berupa cache granule flat (bukan per-scene):
+# satu granule GPM harian ikut dipakai window 72h/7d tanggal berikutnya, jadi
+# tidak bisa dimiliki satu folder tanggal saja.
+FLAT_RAW_SOURCES: frozenset[str] = frozenset({"modis", "gpm"})
 
 DATA_ROOT = Path("data") / "datasets"
+
+# Nama folder source <-> nilai kolom data_products.source.
+SOURCE_DB_VALUES: dict[str, str] = {
+    "sentinel1": "SENTINEL1",
+    "modis": "MODIS",
+    "gpm": "GPM",
+}
+FUSION_DB_SOURCE = "FUSION"
 
 
 def slugify(name: str) -> str:
@@ -44,10 +83,10 @@ def slugify(name: str) -> str:
     return slug or "dataset"
 
 
-def scene_slug(scene_key: str) -> str:
+def scene_slug(key: str) -> str:
     """Sanitasi kunci scene (product_identifier S1 atau tanggal YYYYMMDD)
     supaya aman jadi nama folder."""
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(scene_key))
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(key))
 
 
 def date_key(d: date | datetime | str) -> str:
@@ -65,6 +104,30 @@ def date_key(d: date | datetime | str) -> str:
     return s
 
 
+def normalize_tier(tier: str) -> str:
+    t = str(tier).lower()
+    if t not in TIERS:
+        raise ValueError(f"Tier tidak valid: {tier!r}. Valid: {TIERS}")
+    return t
+
+
+def normalize_source(source: str) -> str:
+    s = str(source).lower()
+    if s not in SOURCES:
+        raise ValueError(f"Source tidak valid: {source!r}. Valid: {SOURCES}")
+    return s
+
+
+def sources_for_tier(tier: str) -> tuple[str, ...]:
+    """Source yang absah untuk satu tier. Kosong untuk `fusion` (lintas-source)."""
+    return TIER_SOURCES[normalize_tier(tier)]
+
+
+def db_source(source: str) -> str:
+    """Nama folder source -> nilai kolom data_products.source."""
+    return SOURCE_DB_VALUES[normalize_source(source)]
+
+
 def dataset_dir_name(dataset_id: int, dataset_name: str) -> str:
     return f"{dataset_id}_{slugify(dataset_name)}"
 
@@ -80,76 +143,209 @@ def get_dataset_metadata_path(dataset_id: int, dataset_name: str) -> Path:
 
 
 def get_tier_dir(dataset_id: int, dataset_name: str, tier: str) -> Path:
-    """Path folder untuk satu tier (raw/bronze/silver/gold), berisi satu
-    subfolder per scene."""
-    tier = tier.lower()
-    if tier not in TIERS:
-        raise ValueError(f"Tier tidak valid: {tier!r}. Valid: {TIERS}")
-    return get_dataset_root(dataset_id, dataset_name) / tier
+    """Path folder satu tier. Untuk tier ber-source, isinya subfolder per
+    source; untuk `fusion`, langsung subfolder per scene."""
+    return get_dataset_root(dataset_id, dataset_name) / normalize_tier(tier)
 
 
-def get_scene_dir(dataset_id: int, dataset_name: str, tier: str, scene_key: str) -> Path:
+def get_source_dir(dataset_id: int, dataset_name: str, tier: str, source: str) -> Path:
+    """Path folder satu source di dalam satu tier, mis. silver/modis/."""
+    tier = normalize_tier(tier)
+    source = normalize_source(source)
+    allowed = TIER_SOURCES[tier]
+    if not allowed:
+        raise ValueError(
+            f"Tier {tier!r} tidak punya level source (dia gabungan semua "
+            f"source). Pakai get_fusion_dir()."
+        )
+    if source not in allowed:
+        raise ValueError(
+            f"Source {source!r} tidak dipakai di tier {tier!r}. Valid: {allowed}"
+        )
+    return get_tier_dir(dataset_id, dataset_name, tier) / source
+
+
+def get_scene_dir(
+    dataset_id: int, dataset_name: str, tier: str, source: str, scene_key: str
+) -> Path:
     """
-    Path folder untuk satu scene di dalam satu tier.
+    Path folder satu scene, di dalam satu source, di dalam satu tier.
 
-    get_scene_dir(2, "Hakim D1", "raw", "S1A_IW_GRDH_...")
-        -> data/datasets/2_hakim_d1/raw/S1A_IW_GRDH_...
-    get_scene_dir(2, "Hakim D1", "gold", "20240115")
-        -> data/datasets/2_hakim_d1/gold/20240115
+    get_scene_dir(2, "Hakim D1", "silver", "sentinel1", "S1A_IW_GRDH_...")
+        -> data/datasets/2_hakim_d1/silver/sentinel1/S1A_IW_GRDH_...
+    get_scene_dir(2, "Hakim D1", "gold", "modis", "20240115")
+        -> data/datasets/2_hakim_d1/gold/modis/20240115
     """
-    return get_tier_dir(dataset_id, dataset_name, tier) / scene_slug(scene_key)
+    return get_source_dir(dataset_id, dataset_name, tier, source) / scene_slug(scene_key)
 
 
-def ensure_scene_dir(dataset_id: int, dataset_name: str, tier: str, scene_key: str) -> Path:
-    """Buat (jika belum ada) dan kembalikan folder satu scene di satu tier."""
-    p = get_scene_dir(dataset_id, dataset_name, tier, scene_key)
+def ensure_scene_dir(
+    dataset_id: int, dataset_name: str, tier: str, source: str, scene_key: str
+) -> Path:
+    """Buat (jika belum ada) dan kembalikan folder satu scene."""
+    p = get_scene_dir(dataset_id, dataset_name, tier, source, scene_key)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
+    """Folder output fusion untuk satu tanggal: fusion/{YYYYMMDD}/.
+    Tier fusion tidak punya level source — isinya justru gabungan
+    sentinel1 + modis + gpm."""
+    return get_tier_dir(dataset_id, dataset_name, "fusion") / scene_slug(scene_key)
+
+
+def ensure_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
+    p = get_fusion_dir(dataset_id, dataset_name, scene_key)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def get_scratch_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
     """Folder kerja sementara (hasil kalibrasi radiometrik sebelum crop),
-    dihapus otomatis setelah tahap CROP selesai — bukan bagian dari 4 tier
-    resmi."""
+    dihapus otomatis setelah tahap CROP selesai — bukan bagian dari tier
+    resmi, jadi diletakkan di luar semuanya."""
     return get_dataset_root(dataset_id, dataset_name) / "_work" / scene_slug(scene_key)
 
 
-def get_aux_raw_dir(dataset_id: int, dataset_name: str, source: str) -> Path:
-    """Folder cache bersama untuk granule mentah MODIS/GPM (file .hdf/.nc4
-    sebelum di-mosaic/crop) yang mencakup banyak tanggal sekaligus untuk satu
-    dataset — tidak terikat ke satu scene, jadi diletakkan di bawah tier raw/
-    dengan prefix "_aux_" (aman: product_identifier S1 asli tidak pernah
-    diawali underscore, jadi tidak akan pernah bentrok nama)."""
-    return get_tier_dir(dataset_id, dataset_name, "raw") / f"_aux_{source}"
+def get_granule_cache_dir(dataset_id: int, dataset_name: str, source: str) -> Path:
+    """Folder cache granule mentah MODIS/GPM (.hdf/.nc4 sebelum
+    di-mosaic/crop). Flat, bukan per-scene: satu granule GPM harian ikut
+    dipakai window 72h/7d tanggal-tanggal berikutnya, jadi tidak bisa
+    dimiliki satu folder tanggal saja."""
+    source = normalize_source(source)
+    if source not in FLAT_RAW_SOURCES:
+        raise ValueError(
+            f"Source {source!r} tidak pakai cache granule flat. "
+            f"Valid: {sorted(FLAT_RAW_SOURCES)}"
+        )
+    return get_source_dir(dataset_id, dataset_name, "raw", source)
 
 
-def list_scenes(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
-    """List semua nama folder scene (bukan folder aux berawalan "_") yang
-    ada di dalam satu tier."""
-    p = get_tier_dir(dataset_id, dataset_name, tier)
+def list_sources(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
+    """Source yang benar-benar punya folder on-disk di satu tier."""
+    tier = normalize_tier(tier)
+    if not TIER_SOURCES[tier]:
+        return []
+    root = get_tier_dir(dataset_id, dataset_name, tier)
+    if not root.exists():
+        return []
+    return [s for s in TIER_SOURCES[tier] if (root / s).is_dir()]
+
+
+def list_scenes(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[str]:
+    """Semua nama folder scene di satu source pada satu tier. Folder
+    berawalan "_" dilewati (bukan scene)."""
+    p = get_source_dir(dataset_id, dataset_name, tier, source)
     if not p.exists():
         return []
     return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
 
 
-def get_scene_files(dataset_id: int, dataset_name: str, tier: str, scene_key: str) -> list[Path]:
-    """List semua file di dalam satu scene pada satu tier."""
-    p = get_scene_dir(dataset_id, dataset_name, tier, scene_key)
+def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
+    p = get_tier_dir(dataset_id, dataset_name, "fusion")
+    if not p.exists():
+        return []
+    return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
+
+
+def _files_under(p: Path) -> list[Path]:
     if not p.exists():
         return []
     return sorted(f for f in p.rglob("*") if f.is_file())
+
+
+def get_scene_files(
+    dataset_id: int, dataset_name: str, tier: str, source: str, scene_key: str
+) -> list[Path]:
+    """Semua file di dalam satu scene pada satu source/tier."""
+    return _files_under(get_scene_dir(dataset_id, dataset_name, tier, source, scene_key))
+
+
+def get_fusion_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
+    return _files_under(get_fusion_dir(dataset_id, dataset_name, scene_key))
+
+
+def get_source_files(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[Path]:
+    """Semua file satu source di satu tier (semua scene + cache granule)."""
+    return _files_under(get_source_dir(dataset_id, dataset_name, tier, source))
 
 
 def get_tier_files(dataset_id: int, dataset_name: str, tier: str) -> list[Path]:
-    """List semua file di dalam satu tier (semua scene, termasuk cache aux)."""
-    p = get_tier_dir(dataset_id, dataset_name, tier)
-    if not p.exists():
-        return []
-    return sorted(f for f in p.rglob("*") if f.is_file())
+    """Semua file di dalam satu tier, lintas source."""
+    return _files_under(get_tier_dir(dataset_id, dataset_name, tier))
+
+
+def _size_of(files: list[Path]) -> int:
+    total = 0
+    for f in files:
+        try:
+            total += f.stat().st_size
+        except OSError:
+            # File bisa hilang di antara rglob dan stat kalau cleanup jalan
+            # bersamaan — hitung 0 daripada menjatuhkan seluruh ringkasan.
+            continue
+    return total
+
+
+def storage_breakdown(dataset_id: int, dataset_name: str) -> dict:
+    """Ringkasan pemakaian disk satu dataset, dipecah per tier lalu per source.
+
+    Satu-satunya tempat angka ini dihitung: orchestrator memakainya untuk
+    metadata.json dan API storage memakainya untuk respons-nya, jadi keduanya
+    tidak bisa berbeda. Semua ukuran dalam byte; pemanggil yang mau MB
+    membaginya sendiri supaya tidak ada pembulatan ganda.
+    """
+    tiers: dict[str, dict] = {}
+    per_source: dict[str, dict] = {}
+
+    for tier in TIERS:
+        allowed = TIER_SOURCES[tier]
+        sources: dict[str, dict] = {}
+
+        if allowed:
+            for source in allowed:
+                files = get_source_files(dataset_id, dataset_name, tier, source)
+                if not files:
+                    continue
+                size = _size_of(files)
+                sources[source] = {
+                    "size_bytes": size,
+                    "file_count": len(files),
+                    "scene_count": len(list_scenes(dataset_id, dataset_name, tier, source)),
+                }
+                agg = per_source.setdefault(source, {"size_bytes": 0, "file_count": 0})
+                agg["size_bytes"] += size
+                agg["file_count"] += len(files)
+            scene_count = sum(v["scene_count"] for v in sources.values())
+        else:
+            # Tier fusion: lintas-source, tidak punya pecahan per source.
+            scene_count = len(list_fusion_scenes(dataset_id, dataset_name))
+
+        files = get_tier_files(dataset_id, dataset_name, tier)
+        size = _size_of(files)
+        tiers[tier] = {
+            "size_bytes": size,
+            "file_count": len(files),
+            "scene_count": scene_count,
+            "sources": sources,
+        }
+        if not allowed and files:
+            agg = per_source.setdefault(FUSION_DB_SOURCE.lower(), {"size_bytes": 0, "file_count": 0})
+            agg["size_bytes"] += size
+            agg["file_count"] += len(files)
+
+    return {
+        "tiers": tiers,
+        "sources": per_source,
+        "total_size_bytes": sum(t["size_bytes"] for t in tiers.values()),
+        "total_file_count": sum(t["file_count"] for t in tiers.values()),
+    }
 
 
 def write_dataset_metadata(dataset_id: int, dataset_name: str, metadata: dict) -> Path:
-    """Tulis metadata.json level-dataset (ringkasan, bukan sumber kebenaran — DB tetap authoritative)."""
+    """Tulis metadata.json level-dataset (ringkasan, bukan sumber kebenaran —
+    DB tetap authoritative)."""
     path = get_dataset_metadata_path(dataset_id, dataset_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -157,3 +353,16 @@ def write_dataset_metadata(dataset_id: int, dataset_name: str, metadata: dict) -
         json.dump(metadata, f, indent=2, default=str)
     tmp.replace(path)
     return path
+
+
+def read_dataset_metadata(dataset_id: int, dataset_name: str) -> dict | None:
+    """Baca metadata.json level-dataset, None kalau belum pernah ditulis."""
+    path = get_dataset_metadata_path(dataset_id, dataset_name)
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("[FM] metadata.json dataset_id=%d tidak terbaca: %s", dataset_id, exc)
+        return None

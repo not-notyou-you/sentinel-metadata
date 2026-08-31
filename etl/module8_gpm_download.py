@@ -5,6 +5,11 @@ GPM_3IMERGDF, falling back to Late Run GPM_3IMERGDL for dates not yet
 published in Final), aggregates it into 24h/72h/7-day accumulation windows,
 reprojects/crops it to the dataset AOI at the Sentinel-1 grid resolution, and
 writes one GeoTIFF per window for lineage tracking.
+
+Output ditulis ke data/datasets/{id}_{slug}/silver/gpm/{YYYYMMDD}/ dan
+granule mentahnya di-cache di raw/gpm/. Cache-nya flat (bukan per-tanggal)
+karena satu granule harian ikut dipakai window 72h/7d tanggal-tanggal
+berikutnya — lihat folder_manager.get_granule_cache_dir.
 """
 
 from __future__ import annotations
@@ -52,6 +57,20 @@ S1_RESOLUTION_M = 10
 S1_RESOLUTION_DEG = S1_RESOLUTION_M / 111_320.0  # meters -> degrees at the equator
 MAX_RETRIES = 3
 DEFAULT_NODATA = -9999.9
+
+GPM_PRODUCT_TYPE = "GPM_RAINFALL"
+
+
+def band_filename(window_name: str, date_key: str) -> str:
+    """Nama file GeoTIFF harian untuk satu window akumulasi. Satu-satunya
+    tempat pola nama ini didefinisikan — module9_fusion.py mencari file
+    input lewat fungsi ini, bukan lewat string literal-nya sendiri."""
+    return f"gpm_rain_{window_name}_{date_key}.tif"
+
+
+def band_name(window_name: str) -> str:
+    """Window akumulasi -> data_products.band_name, mis. "24h" -> RAIN_24H."""
+    return f"RAIN_{window_name.upper()}"
 
 # window name -> number of trailing days to accumulate, ending on the target date
 WINDOWS = {
@@ -383,9 +402,8 @@ def download_gpm_scene(
         an overall `quality`/`failed_windows` summary.
     """
     date_key = date.strftime("%Y%m%d")
-    silver_dir = fm.get_scene_dir(dataset_id, dataset_name, "silver", date_key)
-    raw_dir = fm.get_aux_raw_dir(dataset_id, dataset_name, "gpm")
-    silver_dir.mkdir(parents=True, exist_ok=True)
+    silver_dir = fm.ensure_scene_dir(dataset_id, dataset_name, "silver", "gpm", date_key)
+    raw_dir = fm.get_granule_cache_dir(dataset_id, dataset_name, "gpm")
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     scene_label = f"GPM_{date_key}"
@@ -394,7 +412,7 @@ def download_gpm_scene(
     failed_windows: list[dict] = []
 
     for window_name, num_days in WINDOWS.items():
-        out_path = silver_dir / f"gpm_rain_{window_name}_{date_key}.tif"
+        out_path = silver_dir / band_filename(window_name, date_key)
         product_id = f"GPM_3IMERGD.{window_name}.{date_key}.jabodetabek"
 
         if out_path.exists():

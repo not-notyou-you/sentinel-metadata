@@ -17,11 +17,53 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-# Use a separate test database to avoid polluting dev data
-TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5432/sentinel1_flood_test"
-)
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _resolve_test_db_url() -> str:
+    """URL database uji.
+
+    Urutan: TEST_DATABASE_URL kalau di-set; kalau tidak, turunkan dari
+    DATABASE_URL di .env dengan menambah akhiran `_test` pada nama database.
+    Sebelumnya nilai default-nya dihardcode dengan password 'postgres', sehingga
+    di mesin dengan kredensial lain seluruh test error saat setup.
+    """
+    explicit = os.getenv("TEST_DATABASE_URL")
+    if explicit:
+        return explicit
+
+    main_url = os.getenv("DATABASE_URL")
+    if not main_url:
+        return "postgresql+psycopg2://postgres:postgres@localhost:5432/sentinel1_flood_test"
+
+    base, _, dbname = main_url.rpartition("/")
+    dbname, sep, query = dbname.partition("?")
+    return f"{base}/{dbname}_test{sep}{query}"
+
+
+TEST_DB_URL = _resolve_test_db_url()
+
+
+def _guard_not_production(url: str) -> None:
+    """Cegah test menghapus database produksi.
+
+    Fixture db_client menjalankan Base.metadata.drop_all() saat teardown, jadi
+    kalau URL uji tidak sengaja menunjuk database utama, seluruh tabel produksi
+    ikut terhapus. Lebih baik gagal keras di awal.
+    """
+    main_url = os.getenv("DATABASE_URL")
+    if main_url and url.rstrip("/") == main_url.rstrip("/"):
+        raise RuntimeError(
+            "Test database URL sama dengan DATABASE_URL produksi. "
+            "Test melakukan drop_all() saat teardown — batalkan. "
+            "Set TEST_DATABASE_URL ke database terpisah."
+        )
+    if not url.rpartition("/")[2].partition("?")[0].endswith("_test"):
+        raise RuntimeError(
+            f"Nama database uji harus berakhiran '_test', dapat: {url.rpartition('/')[2]}"
+        )
 
 
 @pytest.fixture(scope="session")
@@ -33,7 +75,22 @@ def db_client():
     from sqlalchemy import text
     from etl.database_client import DatabaseClient, Base
 
+    _guard_not_production(TEST_DB_URL)
     client = DatabaseClient(TEST_DB_URL, pool_size=2, max_overflow=2)
+
+    # Tabel memakai kolom PostGIS, jadi ekstensinya harus ada sebelum create_all.
+    # Di database uji yang baru dibuat ekstensi ini belum tentu terpasang.
+    try:
+        with client.session() as sess:
+            sess.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+    except Exception as exc:  # pragma: no cover - hanya jalur pesan error
+        pytest.exit(
+            f"Tidak bisa menyiapkan database uji {TEST_DB_URL!r}: {exc}\n"
+            "Buat dulu databasenya, mis.:\n"
+            '  psql -U postgres -c "CREATE DATABASE sentinel1_flood_test"',
+            returncode=1,
+        )
+
     client.create_tables()
     # create_tables() only runs SQLAlchemy DDL (Base.metadata.create_all) — it
     # doesn't run schema.sql's raw seed INSERTs, so processing_stages (needed

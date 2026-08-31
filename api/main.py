@@ -10,10 +10,15 @@ mimetypes.add_type("image/webp", ".webp")
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from etl.database_client import DatabaseClient
+# get_db di-re-export supaya `from api.main import get_db` tetap jalan; objeknya
+# sama persis dengan api.deps.get_db, jadi dependency_overrides lewat jalur mana
+# pun mengenai callable yang sama.
+from api.deps import get_db, set_db
 from api.routes import datasets, health, lineage, live, pipeline, preview, products, quality, regions, scenes, storage
 
 logger = logging.getLogger(__name__)
@@ -21,17 +26,12 @@ _db_client: DatabaseClient | None = None
 _live_scheduler = None
 
 
-def get_db() -> DatabaseClient:
-    if _db_client is None:
-        raise RuntimeError("DatabaseClient not initialized. App startup failed.")
-    return _db_client
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _db_client, _live_scheduler
     logger.info("[API] startup: initializing DatabaseClient")
     _db_client = DatabaseClient.from_env()
+    set_db(_db_client)
     health_info = _db_client.check_health()
     if not health_info.get("connected"):
         logger.error("[API] DB health check FAILED: %s", health_info)
@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _live_scheduler.shutdown()
 
     logger.info("[API] shutdown: disposing DatabaseClient")
+    set_db(None)
     if _db_client:
         _db_client.dispose()
 
@@ -93,6 +94,22 @@ async def log_requests(request: Request, call_next) -> Response:
     return response
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Ratakan error validasi Pydantic jadi satu kalimat.
+
+    Bentuk bawaan FastAPI (`detail` berisi list of dict) tidak bisa ditampilkan
+    langsung di UI; front-end di web/app.js membaca `detail` sebagai teks.
+    """
+    messages = []
+    for err in exc.errors():
+        msg = str(err.get("msg", "")).removeprefix("Value error, ").strip()
+        loc = [str(p) for p in err.get("loc", []) if p not in ("body", "query", "path")]
+        messages.append(f"{'.'.join(loc)}: {msg}" if loc else msg)
+    detail = " | ".join(dict.fromkeys(m for m in messages if m)) or "Permintaan tidak valid"
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error("Unhandled exception on %s: %s", request.url.path, exc, exc_info=True)
@@ -100,6 +117,14 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         status_code=500,
         content={"detail": "Internal server error", "path": str(request.url.path)},
     )
+
+
+# Info API. Dulu ada di "/", lalu tergeser waktu web UI di-mount di "/" (commit
+# 76bdcc3). Sekarang tinggal di "/api" bersama route lainnya, sedangkan "/"
+# memang milik UI.
+@app.get("/api", include_in_schema=False)
+async def api_info() -> dict:
+    return {"message": app.title, "docs": app.docs_url, "version": app.version}
 
 
 app.include_router(health.router, prefix="/api", tags=["Health"])

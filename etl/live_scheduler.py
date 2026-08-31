@@ -2,24 +2,21 @@
 from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from sqlalchemy import select
 from etl.constants import (
     GPM_PRODUCT_SHORT_NAME,
     GPM_SOURCE,
     GPM_TILE_ID,
-    MODIS_PRODUCT_SHORT_NAME,
-    MODIS_SOURCE,
-    MODIS_TILE_ID,
 )
 from etl.database_client import DatabaseClient, Dataset, DatasetJob, LiveDatasetSource
 from etl.dataset_manager import DatasetManager
-from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
 from etl.module1_download import discover_scenes
 from etl.module5_orchestrator import run_dataset_job
-from etl.module7_modis_download import download_modis_scene
-from etl.module8_gpm_download import download_gpm_scene
+from etl.module9_fusion import (
+    ensure_gpm_inputs_for_date,
+    ensure_modis_inputs_for_date,
+)
 from etl.pipeline_logger import PipelineLogger
 
 logger = logging.getLogger(__name__)
@@ -163,57 +160,33 @@ class LiveScheduler:
         return True
 
     def _check_and_ingest_modis(self, live: dict, source: dict) -> bool:
+        """Ingest MODIS harian untuk dataset LIVE.
+
+        Registrasi produk (SILVER -> ekspor COG GOLD -> baris data_products +
+        lineage) dilakukan module9_fusion.ensure_modis_inputs_for_date, sama
+        persis dengan jalur dataset biasa. Sebelumnya di sini ada salinan
+        logika registrasi sendiri yang cuma mencatat band FLOOD ke SILVER —
+        dan memanggil download_modis_scene tanpa argumen `dataset_name`,
+        sehingga `since` terbaca sebagai nama dataset dan seluruh path
+        output-nya salah."""
         dataset_id = live["dataset_id"]
         today = _now()
         since = source["last_ingest"] or (today - timedelta(days=_DEFAULT_LOOKBACK_DAYS))
         bbox_tuple = self._bbox_tuple(live["bbox_wkt"])
 
         self._update_source_check("MODIS", last_check=_now())
-
-        try:
-            _product_id, metadata = download_modis_scene(dataset_id, since, today, bbox_tuple, plog=self._plog)
-        except NotImplementedError:
-            logger.info("[LIVE] MODIS: download belum diimplementasikan, skip")
-            return False
-        except Exception:
-            logger.exception("[LIVE] MODIS: gagal download/proses")
-            return False
-
-        meta = MetadataManager(self._db)
-        lineage = LineageTracker(self._db)
         self._create_live_job(dataset_id, since.date(), today.date(), "LIVE_INGEST")
-        scene_id = self._resolve_placeholder_scene(dataset_id, live["region_id"])
-        processing_job_id = meta.insert_processing_job(
-            scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": "MODIS"}
-        )
+
         registered = 0
-        for output in metadata["outputs"]:
-            try:
-                flood_tif = output["flood_path"]
-                meta.insert_nasa_scene(
-                    source=MODIS_SOURCE,
-                    tile_id=MODIS_TILE_ID,
-                    product_short_name=MODIS_PRODUCT_SHORT_NAME,
-                    acquisition_date=date.fromisoformat(output["date"]),
-                    region_id=live["region_id"],
-                    raw_file_path=flood_tif,
-                    download_url=None,
-                )
-                meta.insert_data_product(
-                    scene_id=scene_id,
-                    job_id=processing_job_id,
-                    dataset_id=dataset_id,
-                    product_tier="SILVER",
-                    product_type="MODIS_FLOOD",
-                    band_name="FLOOD",
-                    file_path=flood_tif,
-                    file_name=Path(flood_tif).name,
-                    file_size_mb=round(Path(flood_tif).stat().st_size / (1024 ** 2), 3),
-                    data_hash_sha256=lineage.compute_sha256(flood_tif),
-                )
-                registered += 1
-            except Exception:
-                logger.exception("[LIVE] MODIS: gagal registrasi produk tanggal=%s", output.get("date"))
+        d = since.date()
+        while d <= today.date():
+            produced = ensure_modis_inputs_for_date(
+                self._db, dataset_id, live["name"], live["region_id"],
+                bbox_tuple, d, plog=self._plog,
+            )
+            registered += len(produced["SILVER"])
+            d += timedelta(days=1)
+
         if registered:
             self._update_source_check("MODIS", last_ingest=_now())
         return registered > 0
@@ -234,50 +207,13 @@ class LiveScheduler:
 
         dataset_id = live["dataset_id"]
         bbox_tuple = self._bbox_tuple(live["bbox_wkt"])
-
-        try:
-            _product_ids, metadata = download_gpm_scene(dataset_id, today, bbox_tuple, plog=self._plog)
-        except NotImplementedError:
-            logger.info("[LIVE] GPM: download belum diimplementasikan, skip")
-            return False
-        except Exception:
-            logger.exception("[LIVE] GPM: gagal download/proses")
-            return False
-
-        lineage = LineageTracker(self._db)
         self._create_live_job(dataset_id, today.date(), today.date(), "LIVE_INGEST")
-        scene_id = self._resolve_placeholder_scene(dataset_id, live["region_id"])
-        processing_job_id = meta.insert_processing_job(
-            scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": "GPM"}
+
+        produced = ensure_gpm_inputs_for_date(
+            self._db, dataset_id, live["name"], live["region_id"],
+            bbox_tuple, today.date(), plog=self._plog,
         )
-        registered = 0
-        for window_name, output in metadata["windows"].items():
-            try:
-                tif_path = output["path"]
-                meta.insert_nasa_scene(
-                    source=GPM_SOURCE,
-                    tile_id=GPM_TILE_ID,
-                    product_short_name=GPM_PRODUCT_SHORT_NAME,
-                    acquisition_date=today.date(),
-                    region_id=live["region_id"],
-                    raw_file_path=tif_path,
-                    download_url=None,
-                )
-                meta.insert_data_product(
-                    scene_id=scene_id,
-                    job_id=processing_job_id,
-                    dataset_id=dataset_id,
-                    product_tier="SILVER",
-                    product_type="GPM_RAINFALL",
-                    band_name=f"RAIN_{window_name.upper()}",
-                    file_path=tif_path,
-                    file_name=Path(tif_path).name,
-                    file_size_mb=round(Path(tif_path).stat().st_size / (1024 ** 2), 3),
-                    data_hash_sha256=lineage.compute_sha256(tif_path),
-                )
-                registered += 1
-            except Exception:
-                logger.exception("[LIVE] GPM: gagal registrasi produk window=%s", window_name)
+        registered = len(produced["SILVER"])
 
         if registered:
             self._update_source_check("GPM", last_ingest=_now())
@@ -288,25 +224,6 @@ class LiveScheduler:
         from shapely import wkt as shapely_wkt
 
         return shapely_wkt.loads(bbox_wkt).bounds
-
-    def _resolve_placeholder_scene(self, dataset_id: int, region_id: int) -> int:
-        meta = MetadataManager(self._db)
-        placeholder_pid = f"NASA_AUX_DATASET_{dataset_id}"
-        existing = meta.get_scene_by_pid(placeholder_pid)
-        if existing:
-            return existing["scene_id"]
-        live = self._dsmgr.get_dataset(dataset_id)
-        return meta.insert_satellite_scene(
-            product_identifier=placeholder_pid,
-            acquisition_datetime=_now(),
-            region_id=region_id,
-            bbox_wkt=live["bbox_wkt"] if live else "POLYGON((0 0,0 0,0 0,0 0,0 0))",
-            orbit_direction="ASCENDING",
-            polarization_vv=False,
-            polarization_vh=False,
-            resolution_m=250,
-            instrument_mode="AUX",
-        )
 
     def handle_backfill_request(self, date_start: date, date_end: date) -> dict:
         return self._dsmgr.trigger_live_backfill(date_start, date_end)

@@ -57,6 +57,20 @@ class ProductTierEnum(str, PyEnum):
     BRONZE = "BRONZE"
     SILVER = "SILVER"
     GOLD = "GOLD"
+    FUSION = "FUSION"
+
+
+class ProductSourceEnum(str, PyEnum):
+    """Sensor asal sebuah data_product. Dicerminkan oleh level {source}
+    di path on-disk (etl/folder_manager.py) — kecuali FUSION, yang lintas
+    source dan tinggal di tier fusion/ tanpa folder source sendiri.
+    Disimpan sebagai VARCHAR + CHECK constraint, bukan ENUM Postgres:
+    menambah source baru nanti cukup ALTER CONSTRAINT, tidak perlu
+    ALTER TYPE yang tidak bisa jalan di dalam transaksi."""
+    SENTINEL1 = "SENTINEL1"
+    MODIS = "MODIS"
+    GPM = "GPM"
+    FUSION = "FUSION"
 
 
 class StorageLocationEnum(str, PyEnum):
@@ -174,6 +188,14 @@ class RegionOfInterest(Base):
     admin_level = Column(SmallInteger, nullable=False, default=2)
     country_code = Column(String(2), nullable=False, default="ID")
     is_active = Column(Boolean, nullable=False, default=True)
+    # SEEDER = bawaan sistem, USER = ditambah lewat UI, GEOCODE = auto dari Nominatim.
+    # server_default wajib: tabel ini juga dibuat lewat Base.metadata.create_all()
+    # (tes, instalasi baru), dan INSERT SQL mentah yang tidak menyebut kolom ini
+    # akan kena NOT NULL kalau DDL-nya tidak ikut membawa DEFAULT.
+    source = Column(String(20), nullable=False, default="USER", server_default=text("'USER'"))
+    # Soft-delete: baris tidak pernah dihapus fisik karena scenes/datasets
+    # mereferensikan region_id dengan ON DELETE RESTRICT.
+    deleted_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
@@ -309,6 +331,7 @@ class DataProduct(Base):
         Enum(ProductTierEnum, name="product_tier_enum"),
         nullable=False
     )
+    source = Column(String(20), nullable=False, default=ProductSourceEnum.SENTINEL1.value)
     product_type = Column(String(50), nullable=False)
     band_name = Column(String(10), nullable=False)
     file_name = Column(String(255), nullable=False)

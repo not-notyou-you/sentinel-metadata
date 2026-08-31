@@ -66,6 +66,7 @@ class ProductItem(BaseModel):
     job_id: int
     dataset_id: int | None = None
     product_tier: str
+    source: str
     product_type: str
     band_name: str
     file_name: str
@@ -185,7 +186,10 @@ class DatasetQualitySettings(BaseModel):
 
 
 class DatasetCreateRequest(BaseModel):
-    location: str
+    # Jalur utama: UI mengirim region_id dari tabel lokasi. `location` tetap
+    # diterima untuk pemanggil lama (dan CLI) — di-resolve lewat nama/geocoding.
+    region_id: int | None = None
+    location: str | None = None
     date_start: date
     date_end: date
     tiers: list[str] = Field(default_factory=lambda: ["GOLD"])
@@ -196,7 +200,9 @@ class DatasetCreateRequest(BaseModel):
     @field_validator("tiers")
     @classmethod
     def _validate_tiers(cls, v: list[str]) -> list[str]:
-        allowed = {"RAW", "BRONZE", "SILVER", "GOLD"}
+        from etl.dataset_manager import TIER_ORDER
+
+        allowed = set(TIER_ORDER)
         normalized = [t.upper() for t in v]
         invalid = set(normalized) - allowed
         if invalid:
@@ -209,6 +215,12 @@ class DatasetCreateRequest(BaseModel):
     def _validate_date_range(self) -> "DatasetCreateRequest":
         if self.date_end < self.date_start:
             raise ValueError("date_end must be >= date_start")
+        return self
+
+    @model_validator(mode="after")
+    def _require_location(self) -> "DatasetCreateRequest":
+        if self.region_id is None and not (self.location or "").strip():
+            raise ValueError("Isi region_id atau location")
         return self
 
 
@@ -437,14 +449,146 @@ class LiveSceneItem(BaseModel):
     size_mb: float
 
 
+class SourceStorageItem(BaseModel):
+    """Pemakaian disk satu source di dalam satu tier."""
+    size_bytes: int
+    size_mb: float
+    file_count: int
+    scene_count: int | None = None
+
+
+class TierStorageItem(BaseModel):
+    """Pemakaian disk satu tier, dipecah per source.
+
+    `sources` kosong untuk tier fusion: isinya gabungan semua source, jadi
+    tidak ada pecahan per-source yang bermakna di sana.
+    """
+    size_bytes: int
+    size_mb: float
+    file_count: int
+    scene_count: int
+    sources: dict[str, SourceStorageItem] = Field(default_factory=dict)
+
+
+class DatasetStorageSummary(BaseModel):
+    dataset_id: int
+    tiers: dict[str, TierStorageItem]
+    sources: dict[str, SourceStorageItem]
+    total_size_bytes: int
+    total_size_mb: float
+
+
+class DatasetFileItem(BaseModel):
+    name: str
+    path: str
+    size_mb: float
+
+
+class DatasetSceneFiles(BaseModel):
+    scene: str
+    source: str | None = None
+    files: list[DatasetFileItem]
+
+
+class DatasetTierFilesResponse(BaseModel):
+    dataset_id: int
+    tier: str
+    source: str | None = None
+    scenes: list[DatasetSceneFiles]
+
+
+class SourceQualityItem(BaseModel):
+    """Kualitas satu source untuk satu dataset.
+
+    Cuma SENTINEL1 yang punya metrik radiometrik sungguhan (quality_metrics,
+    dihitung module6_analytics atas band VV/VH). Untuk MODIS/GPM yang
+    dilaporkan adalah *coverage*: berapa band/hari yang benar-benar mendarat
+    di disk dibanding yang diharapkan — bukan skor radiometrik, dan sengaja
+    dibedakan namanya supaya tidak dibaca sebagai hal yang sama.
+    """
+    source: str
+    kind: str                       # "RADIOMETRIC" | "COVERAGE"
+    product_count: int
+    scene_count: int
+    quality_score: float | None = None
+    quality_flag: str | None = None
+    bands: dict[str, float] = Field(default_factory=dict)
+
+
+class DatasetQualityBySourceResponse(BaseModel):
+    dataset_id: int
+    sources: list[SourceQualityItem]
+
+
 class RegionItem(BaseModel):
     region_id: int
     region_code: str
     name: str
     description: str | None
-    bbox: list[float]
+    bbox: list[float]          # [min_lon, min_lat, max_lon, max_lat]
     area_km2: float | None
+    source: str = "SEEDER"     # SEEDER | USER | GEOCODE
+    created_at: datetime | None = None
+    # Lokasi bawaan sistem tidak boleh dihapus dari UI; front-end memakai flag ini
+    # untuk menyembunyikan tombol hapus, tapi API tetap yang menegakkan aturannya.
+    deletable: bool = True
 
 
 class RegionListResponse(BaseModel):
     items: list[RegionItem]
+    total: int = 0
+
+
+class RegionCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+    description: str | None = None
+    region_code: str | None = Field(default=None, max_length=20)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Nama lokasi tidak boleh kosong")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_bbox(self) -> "RegionCreateRequest":
+        # Aturan bbox dipinjam dari etl.geo_utils supaya API, UI, dan pipeline
+        # memakai definisi "bbox sah" yang sama persis.
+        from etl.geo_utils import validate_bbox
+
+        self.min_lon, self.min_lat, self.max_lon, self.max_lat = validate_bbox(
+            self.min_lon, self.min_lat, self.max_lon, self.max_lat
+        )
+        return self
+
+
+class RegionUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "RegionUpdateRequest":
+        if self.name is None and self.description is None:
+            raise ValueError("Tidak ada perubahan: isi name atau description")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("Nama lokasi tidak boleh kosong")
+        return self
+
+
+class GeocodeItem(BaseModel):
+    name: str
+    display_name: str
+    bbox: list[float]
+    type: str | None = None
+
+
+class GeocodeSearchResponse(BaseModel):
+    items: list[GeocodeItem]

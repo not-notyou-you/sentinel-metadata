@@ -1,6 +1,6 @@
 # api/routes/products.py
 """
-GET /api/products              — list products with filters
+GET /api/products              — list products with filters (tier AND source)
 GET /api/products/{id}         — product detail
 GET /api/products/{id}/verify  — integrity hash check
 """
@@ -15,17 +15,18 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 
 from api.schemas import IntegrityCheckResponse, ProductItem, ProductListResponse
-from etl.database_client import DataProduct, DatabaseClient, ProductTierEnum
+from api.deps import get_db
+from etl.database_client import (
+    DataProduct,
+    DatabaseClient,
+    ProductSourceEnum,
+    ProductTierEnum,
+)
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
 
 
 def _product_to_schema(p: DataProduct) -> ProductItem:
@@ -35,6 +36,7 @@ def _product_to_schema(p: DataProduct) -> ProductItem:
         scene_id         = p.scene_id,
         job_id           = p.job_id,
         product_tier     = p.product_tier.value,
+        source           = p.source,
         product_type     = p.product_type,
         band_name        = p.band_name,
         file_name        = p.file_name,
@@ -58,13 +60,19 @@ def _product_to_schema(p: DataProduct) -> ProductItem:
     "",
     response_model=ProductListResponse,
     summary="List data products",
-    description="List output products with optional filters for tier, band, scene, validity.",
+    description=(
+        "List output products with optional filters for tier, source, band, "
+        "scene and validity. Combine tier + source to get one sensor's "
+        "products at one stage, e.g. ?tier=GOLD&source=MODIS."
+    ),
 )
 async def list_products(
-    db:          DatabaseClient = Depends(_get_db),
+    db:          DatabaseClient = Depends(get_db),
     scene_id:    int | None     = Query(None, description="Filter by scene_id"),
-    tier:        str | None     = Query(None, description="RAW | BRONZE | SILVER | GOLD"),
-    band_name:   str | None     = Query(None, description="VV | VH | VV_VH"),
+    tier:        str | None     = Query(None, description="RAW | BRONZE | SILVER | GOLD | FUSION"),
+    source:      str | None     = Query(None, description="SENTINEL1 | MODIS | GPM | FUSION"),
+    band_name:   str | None     = Query(None, description="VV | VH | FLOOD | NDVI | NDWI | RAIN_24H | ..."),
+    dataset_id:  int | None     = Query(None, description="Filter by dataset_id"),
     latest_only: bool           = Query(True,  description="Only is_latest=TRUE products"),
     valid_only:  bool           = Query(True,  description="Only is_valid=TRUE products"),
     limit:       int            = Query(20, ge=1, le=200),
@@ -75,11 +83,20 @@ async def list_products(
 
         if scene_id:
             stmt = stmt.where(DataProduct.scene_id == scene_id)
+        if dataset_id:
+            stmt = stmt.where(DataProduct.dataset_id == dataset_id)
         if tier:
             try:
-                stmt = stmt.where(DataProduct.product_tier == ProductTierEnum(tier))
+                stmt = stmt.where(DataProduct.product_tier == ProductTierEnum(tier.upper()))
             except ValueError:
-                raise HTTPException(400, f"Invalid tier: {tier}. Valid: RAW, BRONZE, SILVER, GOLD")
+                valid = ", ".join(t.value for t in ProductTierEnum)
+                raise HTTPException(400, f"Invalid tier: {tier}. Valid: {valid}")
+        if source:
+            try:
+                stmt = stmt.where(DataProduct.source == ProductSourceEnum(source.upper()).value)
+            except ValueError:
+                valid = ", ".join(x.value for x in ProductSourceEnum)
+                raise HTTPException(400, f"Invalid source: {source}. Valid: {valid}")
         if band_name:
             stmt = stmt.where(DataProduct.band_name == band_name)
         if latest_only:
@@ -108,7 +125,7 @@ async def list_products(
 )
 async def get_product(
     product_id: int,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> ProductItem:
     with db.session() as sess:
         p = sess.get(DataProduct, product_id)
@@ -131,7 +148,7 @@ _MEDIA_TYPE_BY_FORMAT = {
 )
 async def download_product(
     product_id: int,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> FileResponse:
     with db.session() as sess:
         p = sess.get(DataProduct, product_id)
@@ -165,7 +182,7 @@ async def download_product(
 )
 async def verify_product(
     product_id: int,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> IntegrityCheckResponse:
     with db.session() as sess:
         p = sess.get(DataProduct, product_id)

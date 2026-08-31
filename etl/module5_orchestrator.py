@@ -27,6 +27,7 @@ from etl.module1_download import discover_scenes, download_scene
 from etl.module1b_calibrate import run as calibrate_run
 from etl.module2_crop import run as crop_run
 from etl.module3_lee_filter import run as lee_run
+from etl.module4_gold_export import export_scene_to_gold, gold_product_type
 from etl.module6_analytics import compute_band_metrics
 from etl.module9_fusion import FUSION_LAYERS, create_fusion_stack, ensure_aux_inputs_for_date
 from etl.pipeline_logger import PipelineLogger, dataset_log_file
@@ -85,21 +86,47 @@ def _dir_size_bytes(path: Path) -> int:
 
 
 def _write_dataset_metadata(dsmgr: DatasetManager, dataset_id: int, total_size_bytes: int) -> None:
+    """Tulis ulang metadata.json level-dataset.
+
+    Ringkasan read-only turunan tabel `datasets` + isi disk — kalau isinya
+    berbeda dari API, database yang benar. `storage_usage` dipecah per tier
+    lalu per source lewat folder_manager.storage_breakdown, sumber angka yang
+    sama dengan endpoint /api/datasets/{id}/storage/summary."""
     dataset = dsmgr.get_dataset(dataset_id)
     if dataset is None:
         return
+    breakdown = fm.storage_breakdown(dataset_id, dataset["name"])
+    quality_settings = dataset.get("quality_settings") or {}
     fm.write_dataset_metadata(dataset_id, dataset["name"], {
         "dataset_id": dataset_id,
         "name": dataset["name"],
         "location_label": dataset["location_label"],
+        "bbox_wkt": dataset.get("bbox_wkt"),
+        "date_range": {"start": dataset["date_start"], "end": dataset["date_end"]},
         "date_start": dataset["date_start"],
         "date_end": dataset["date_end"],
+        "mode": dataset.get("dataset_kind"),
+        "quality_threshold": quality_settings.get("min_quality_score"),
         "required_tiers": dataset["required_tiers"],
+        "sources": sorted(breakdown["sources"]),
         "status": dataset["status"],
         "total_scenes": dataset["total_scenes"],
         "completed_scenes": dataset["completed_scenes"],
         "failed_scenes": dataset["failed_scenes"],
         "total_size_bytes": total_size_bytes,
+        "storage_usage": {
+            tier: {
+                "size_bytes": info["size_bytes"],
+                "file_count": info["file_count"],
+                "scene_count": info["scene_count"],
+                "sources": {
+                    src: {"size_bytes": v["size_bytes"], "file_count": v["file_count"]}
+                    for src, v in info["sources"].items()
+                },
+            }
+            for tier, info in breakdown["tiers"].items()
+        },
+        "storage_by_source": breakdown["sources"],
         "acquisition_dates": dsmgr.get_acquisition_dates(dataset_id),
         "updated_at": _now(),
     })
@@ -135,14 +162,14 @@ def _process_scene(
     jc.meta.start_job(dl_job_id)
     raw_vv_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id, dataset_id=jc.dataset_id,
-        product_tier="RAW", product_type="RAW_EXTRACTED_TIFF", band_name="VV",
+        product_tier="RAW", source="SENTINEL1", product_type="RAW_EXTRACTED_TIFF", band_name="VV",
         file_path=dl_result.vv_tif_path, file_name=Path(dl_result.vv_tif_path).name,
         file_size_mb=_file_size_mb(dl_result.vv_tif_path),
         data_hash_sha256=jc.lineage.compute_sha256(dl_result.vv_tif_path),
     )
     raw_vh_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id, dataset_id=jc.dataset_id,
-        product_tier="RAW", product_type="RAW_EXTRACTED_TIFF", band_name="VH",
+        product_tier="RAW", source="SENTINEL1", product_type="RAW_EXTRACTED_TIFF", band_name="VH",
         file_path=dl_result.vh_tif_path, file_name=Path(dl_result.vh_tif_path).name,
         file_size_mb=_file_size_mb(dl_result.vh_tif_path),
         data_hash_sha256=jc.lineage.compute_sha256(dl_result.vh_tif_path),
@@ -173,7 +200,7 @@ def _process_scene(
         calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))
         st.output(output_vv=calib_vv, output_vh=calib_vh)
 
-    bronze_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "bronze", pid)
+    bronze_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "bronze", "sentinel1", pid)
     with jc.plog.stage(
         jc.dataset_id, pid, module="MODULE2_CROP", stage="CROP",
         message="Cropping to region boundaries", bbox=list(jc.bbox_tuple),
@@ -190,7 +217,7 @@ def _process_scene(
     vv_rows, vv_cols = _raster_dims(crop_vv)
     bronze_vv_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id, dataset_id=jc.dataset_id,
-        product_tier="BRONZE", product_type="CROPPED_TIFF", band_name="VV",
+        product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VV",
         file_path=crop_vv, file_name=Path(crop_vv).name,
         file_size_mb=_file_size_mb(crop_vv), data_hash_sha256=jc.lineage.compute_sha256(crop_vv),
         rows=vv_rows, cols=vv_cols,
@@ -198,7 +225,7 @@ def _process_scene(
     vh_rows, vh_cols = _raster_dims(crop_vh)
     bronze_vh_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id, dataset_id=jc.dataset_id,
-        product_tier="BRONZE", product_type="CROPPED_TIFF", band_name="VH",
+        product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VH",
         file_path=crop_vh, file_name=Path(crop_vh).name,
         file_size_mb=_file_size_mb(crop_vh), data_hash_sha256=jc.lineage.compute_sha256(crop_vh),
         rows=vh_rows, cols=vh_cols,
@@ -220,7 +247,7 @@ def _process_scene(
     lee_job_id = jc.meta.insert_processing_job(scene_id, "LEE_FILTER", parameters={"window_size": 7, "looks": 1})
     jc.meta.start_job(lee_job_id)
 
-    silver_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "silver", pid)
+    silver_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "silver", "sentinel1", pid)
     with jc.plog.stage(
         jc.dataset_id, pid, module="MODULE3_LEE_FILTER", stage="LEE_FILTER",
         message="Applying Lee filter to reduce speckle", window_size=7, looks=1,
@@ -234,13 +261,13 @@ def _process_scene(
 
     silver_vv_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id, dataset_id=jc.dataset_id,
-        product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
+        product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
         file_path=lee_vv, file_name=Path(lee_vv).name,
         file_size_mb=_file_size_mb(lee_vv), data_hash_sha256=jc.lineage.compute_sha256(lee_vv),
     )
     silver_vh_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id, dataset_id=jc.dataset_id,
-        product_tier="SILVER", product_type="LEE_FILTERED", band_name="VH",
+        product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VH",
         file_path=lee_vh, file_name=Path(lee_vh).name,
         file_size_mb=_file_size_mb(lee_vh), data_hash_sha256=jc.lineage.compute_sha256(lee_vh),
     )
@@ -296,6 +323,60 @@ def _process_scene(
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="QUALITY_ANALYTICS", stage_status="COMPLETED")
 
+    if "GOLD_EXPORT" in jc.skip_stages:
+        return scene_id, produced_tiers, produced_files
+    jc.pause_event.wait()
+    if jc.cancel_event.is_set():
+        return scene_id, produced_tiers, produced_files
+
+    jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="GOLD_EXPORT", stage_status="RUNNING")
+    gold_job_id = jc.meta.insert_processing_job(
+        scene_id, "GOLD_EXPORT",
+        parameters={"dataset_id": jc.dataset_id, "source": "SENTINEL1"},
+    )
+    jc.meta.start_job(gold_job_id)
+
+    with jc.plog.stage(
+        jc.dataset_id, pid, module="MODULE4_GOLD_EXPORT", stage="GOLD_EXPORT",
+        message="Exporting Sentinel-1 bands to analysis-ready COG",
+    ) as st:
+        gold_files = export_scene_to_gold(
+            jc.dataset_id, jc.dataset_name, "sentinel1", pid,
+            {"VV": lee_vv, "VH": lee_vh},
+        )
+        st.output(
+            output_vv=gold_files.get("VV"), output_vh=gold_files.get("VH"),
+            file_size_mb=round(
+                sum(_file_size_mb(f) for f in gold_files.values() if Path(f).exists()), 3
+            ),
+        )
+
+    gold_product_ids: dict[str, int] = {}
+    for band, silver_product_id in (("VV", silver_vv_id), ("VH", silver_vh_id)):
+        gold_path = gold_files.get(band)
+        if not gold_path:
+            continue
+        g_rows, g_cols = _raster_dims(gold_path)
+        gold_product_ids[band] = jc.meta.insert_data_product(
+            scene_id=scene_id, job_id=gold_job_id, dataset_id=jc.dataset_id,
+            product_tier="GOLD", source="SENTINEL1",
+            product_type=gold_product_type("sentinel1"), band_name=band,
+            file_path=gold_path, file_name=Path(gold_path).name,
+            file_size_mb=_file_size_mb(gold_path),
+            data_hash_sha256=jc.lineage.compute_sha256(gold_path),
+            file_format="COG", rows=g_rows, cols=g_cols,
+        )
+        jc.lineage.record_transformation(
+            silver_product_id, gold_product_ids[band], "GOLD_EXPORT", gold_job_id,
+            {"source": "sentinel1"},
+        )
+    jc.meta.complete_job(
+        gold_job_id, cpu_usage_percent=st.cpu_peak_percent, memory_usage_mb=st.memory_peak_mb
+    )
+    produced_tiers.append("GOLD")
+    produced_files["GOLD"] = list(gold_files.values())
+    jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="GOLD_EXPORT", stage_status="COMPLETED")
+
     if "FUSION" in jc.skip_stages:
         return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
@@ -306,8 +387,8 @@ def _process_scene(
 
     s1_date = acq_date.date()
     date_key = s1_date.strftime("%Y%m%d")
-    gold_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "gold", date_key)
-    h5_path = gold_dir / f"fusion_{date_key}.h5"
+    fusion_dir = fm.get_fusion_dir(jc.dataset_id, jc.dataset_name, date_key)
+    h5_path = fusion_dir / f"fusion_{date_key}.h5"
 
     with jc.plog.stage(
         jc.dataset_id, pid, module="MODULE9_FUSION", stage="FUSION",
@@ -320,7 +401,7 @@ def _process_scene(
                 {"progress_percent": round(done / total * 100, 1), "layer": layer_name},
             )
 
-        ensure_aux_inputs_for_date(
+        aux_produced = ensure_aux_inputs_for_date(
             jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date, plog=jc.plog
         )
         create_fusion_stack(
@@ -332,11 +413,18 @@ def _process_scene(
             file_size_mb=_file_size_mb(str(h5_path)) if h5_path.exists() else None,
         )
 
-    produced_tiers.append("GOLD")
-    produced_files["GOLD"] = [
+    produced_tiers.append("FUSION")
+    produced_files["FUSION"] = [
         str(h5_path),
-        str(gold_dir / "fusion_metadata.json"),
+        str(fusion_dir / "fusion_metadata.json"),
     ]
+    # File MODIS/GPM yang baru ditulis ensure_aux_inputs_for_date ikut
+    # dicatat di tier-nya masing-masing, supaya _cleanup_scene_tiers bisa
+    # menghapusnya juga kalau tier itu tidak diminta dataset ini.
+    for aux_tier, aux_paths in aux_produced.items():
+        produced_files.setdefault(aux_tier, []).extend(aux_paths)
+        if aux_paths and aux_tier not in produced_tiers:
+            produced_tiers.append(aux_tier)
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="COMPLETED")
 
     return scene_id, produced_tiers, produced_files
@@ -353,21 +441,32 @@ def _cleanup_scene_tiers(
     if not tiers_to_delete:
         return
     for tier in tiers_to_delete:
-        tier_dir = None
+        # Satu tier sekarang bisa berisi beberapa folder scene sekaligus
+        # (silver/sentinel1/{pid}, silver/modis/{date}, silver/gpm/{date}),
+        # jadi folder induknya dikumpulkan semua — bukan cuma yang terakhir.
+        scene_dirs: set[Path] = set()
+        deleted_paths: list[str] = []
         for file_path in produced_files.get(tier, []):
             p = Path(file_path)
-            tier_dir = p.parent
+            scene_dirs.add(p.parent)
             if p.exists():
                 try:
                     p.unlink()
+                    deleted_paths.append(file_path)
                 except OSError as exc:
                     logger.error("[ORCH] gagal hapus %s: %s", p, exc)
-        if tier_dir is not None:
+            else:
+                deleted_paths.append(file_path)
+        for d in scene_dirs:
             try:
-                tier_dir.rmdir()
+                d.rmdir()
             except OSError:
                 pass  # masih ada file scene lain di tanggal yang sama
+        # Produk Sentinel-1 dicocokkan lewat scene_id (menangkap juga file
+        # yang ditulis run sebelumnya), produk aux MODIS/GPM lewat path
+        # karena barisnya menempel ke scene placeholder, bukan scene ini.
         jc.meta.mark_products_invalid(scene_id=scene_id, dataset_id=jc.dataset_id, tier=tier)
+        jc.meta.mark_products_invalid_by_paths(jc.dataset_id, deleted_paths)
     logger.info("[ORCH] cleanup pid=%s tiers dihapus=%s", pid, sorted(tiers_to_delete))
 
 
@@ -384,8 +483,9 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, current_stage="DOWNLOAD", stage_status="RUNNING", started_at=_now()
             )
-            raw_dir = fm.get_scene_dir(jc.dataset_id, jc.dataset_name, "raw", pid)
-            raw_dir.mkdir(parents=True, exist_ok=True)
+            raw_dir = fm.ensure_scene_dir(
+                jc.dataset_id, jc.dataset_name, "raw", "sentinel1", pid
+            )
 
             def _download_progress(pct: float, detail: str) -> None:
                 jc.plog.log_event(

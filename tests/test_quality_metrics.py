@@ -114,7 +114,7 @@ class TestQualityFlagLogic:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
+            product_tier="GOLD", source="SENTINEL1", product_type="COG",
             band_name="VV",
             file_path=f"/tmp/flag_score_{score}.tif",
             file_name=f"flag_{score}.tif",
@@ -191,7 +191,7 @@ class TestSHA256Integrity:
         job_id  = meta.insert_processing_job(sample_scene, "COG_EXPORT")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
+            product_tier="GOLD", source="SENTINEL1", product_type="COG",
             band_name="VV", file_path=str(tif), file_name=tif.name,
             file_size_mb=0.001, data_hash_sha256=correct_hash,
         )
@@ -211,7 +211,7 @@ class TestSHA256Integrity:
         job_id  = meta.insert_processing_job(sample_scene, "COG_EXPORT")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG",
+            product_tier="GOLD", source="SENTINEL1", product_type="COG",
             band_name="VH", file_path=str(tif), file_name=tif.name,
             file_size_mb=0.001, data_hash_sha256=original_hash,
         )
@@ -241,7 +241,7 @@ class TestAlertAutoTrigger:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="COG", band_name="VV",
+            product_tier="GOLD", source="SENTINEL1", product_type="COG", band_name="VV",
             file_path="/tmp/fail_alert.tif", file_name="fail_alert.tif",
             file_size_mb=38.0,
             data_hash_sha256=hashlib.sha256(b"FAIL_ALERT").hexdigest(),

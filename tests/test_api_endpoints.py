@@ -173,7 +173,8 @@ class TestProductsEndpoints:
         assert resp.status_code == 200
         body = resp.json()
         assert body["product_id"]   == prod_id
-        assert body["product_tier"] == "GOLD"
+        assert body["product_tier"] == "FUSION"
+        assert body["source"]       == "FUSION"
         assert body["band_name"]    == "FUSION"
         assert "data_hash_sha256"   in body
         assert "file_path"          in body
@@ -308,11 +309,131 @@ class TestLineageEndpoints:
 
 class TestRootEndpoint:
 
-    def test_root_returns_api_info(self, api_client):
-        """GET / returns API info with version and docs link."""
-        resp = api_client.get("/")
+    def test_api_info_returns_version_and_docs(self, api_client):
+        """GET /api returns API info with version and docs link."""
+        resp = api_client.get("/api")
         assert resp.status_code == 200
         body = resp.json()
         assert "message" in body
         assert "docs"    in body
         assert "version" in body
+
+    def test_root_serves_web_ui(self, api_client):
+        """GET / serves the web console, not JSON (web/ is mounted at /)."""
+        resp = api_client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+
+
+# ---------------------------------------------------------------------------
+# TIER x SOURCE FILTERING & PER-DATASET STORAGE
+# ---------------------------------------------------------------------------
+
+class TestSourceFiltering:
+    """Filter gabungan tier + source adalah alasan utama kolom
+    data_products.source ada (migrasi 013)."""
+
+    def test_products_carry_source(self, api_client, seeded):
+        resp = api_client.get("/api/products")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert items, "seed harus menghasilkan produk"
+        for item in items:
+            assert item["source"] in {"SENTINEL1", "MODIS", "GPM", "FUSION"}
+
+    def test_filter_by_source(self, api_client, seeded):
+        resp = api_client.get("/api/products?source=SENTINEL1")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert items
+        assert all(i["source"] == "SENTINEL1" for i in items)
+
+    def test_filter_by_tier_and_source(self, api_client, seeded):
+        """Stack fusion tinggal di tier FUSION dengan source FUSION -- dan
+        tidak boleh ikut tertarik saat memfilter source SENTINEL1, walaupun
+        barisnya menempel ke scene_id Sentinel-1."""
+        resp = api_client.get("/api/products?tier=FUSION&source=FUSION")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["product_type"] == "FUSION_H5"
+
+        resp = api_client.get("/api/products?tier=FUSION&source=SENTINEL1")
+        assert resp.status_code == 200
+        assert resp.json()["items"] == []
+
+    def test_source_filter_is_case_insensitive(self, api_client, seeded):
+        resp = api_client.get("/api/products?source=sentinel1")
+        assert resp.status_code == 200
+        assert resp.json()["items"]
+
+    def test_invalid_source_returns_400(self, api_client, seeded):
+        resp = api_client.get("/api/products?source=LANDSAT")
+        assert resp.status_code == 400
+        assert "LANDSAT" in resp.json()["detail"]
+
+    def test_invalid_tier_returns_400(self, api_client, seeded):
+        resp = api_client.get("/api/products?tier=PLATINUM")
+        assert resp.status_code == 400
+
+
+class TestDatasetStorageEndpoints:
+
+    def test_storage_summary_shape(self, api_client, sample_dataset):
+        resp = api_client.get(f"/api/datasets/{sample_dataset}/storage/summary")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Kelima tier selalu dilaporkan walau kosong, supaya konsumen tidak
+        # perlu membedakan "tier tidak ada" dari "tier kosong".
+        assert set(body["tiers"]) == {"raw", "bronze", "silver", "gold", "fusion"}
+        assert body["tiers"]["fusion"]["sources"] == {}
+        assert body["total_size_bytes"] == 0
+
+    def test_storage_files_rejects_source_on_fusion_tier(self, api_client, sample_dataset):
+        """Tier fusion gabungan semua source, jadi ?source= di sana keliru."""
+        resp = api_client.get(
+            f"/api/datasets/{sample_dataset}/storage/files/fusion?source=modis"
+        )
+        assert resp.status_code == 400
+
+    def test_storage_files_rejects_unknown_tier(self, api_client, sample_dataset):
+        resp = api_client.get(f"/api/datasets/{sample_dataset}/storage/files/platinum")
+        assert resp.status_code == 400
+
+    def test_storage_files_empty_tier(self, api_client, sample_dataset):
+        resp = api_client.get(f"/api/datasets/{sample_dataset}/storage/files/gold")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["tier"] == "gold"
+        assert body["scenes"] == []
+
+    def test_metadata_404_before_first_job(self, api_client, sample_dataset):
+        """metadata.json baru ditulis saat job pertama selesai."""
+        resp = api_client.get(f"/api/datasets/{sample_dataset}/metadata")
+        assert resp.status_code == 404
+
+    def test_download_source_without_tier_is_400(self, api_client, sample_dataset):
+        resp = api_client.get(f"/api/datasets/{sample_dataset}/download?source=modis")
+        assert resp.status_code == 400
+
+
+class TestQualityBySource:
+
+    def test_quality_by_source_empty_dataset(self, api_client, sample_dataset):
+        """Dataset tanpa produk tetap 200 dengan daftar kosong, bukan 404 --
+        UI memanggil endpoint ini untuk dataset yang baru dibuat."""
+        resp = api_client.get(f"/api/quality/dataset/{sample_dataset}/by-source")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["dataset_id"] == sample_dataset
+        assert body["sources"] == []
+
+    def test_quality_by_source_kinds(self, api_client, seeded, sample_dataset):
+        resp = api_client.get(f"/api/quality/dataset/{sample_dataset}/by-source")
+        assert resp.status_code == 200
+        for item in resp.json()["sources"]:
+            assert item["kind"] in {"RADIOMETRIC", "COVERAGE"}
+
+    def test_quality_by_source_404_for_unknown_dataset(self, api_client):
+        resp = api_client.get("/api/quality/dataset/999999/by-source")
+        assert resp.status_code == 404

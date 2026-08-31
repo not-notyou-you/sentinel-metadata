@@ -1,9 +1,28 @@
-const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','FUSION','CLEANUP'];
-const TIER_STAGE = { RAW: 'DOWNLOAD', BRONZE: 'CROP', SILVER: 'LEE_FILTER', GOLD: 'FUSION' };
-const TIER_COLORS = { RAW: '#8B7FE8', BRONZE: '#C97C4B', SILVER: '#9FB0C9', GOLD: '#35D0C0' };
+const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','GOLD_EXPORT','FUSION','CLEANUP'];
+const TIER_ORDER = ['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'];
+const TIER_STAGE = { RAW: 'DOWNLOAD', BRONZE: 'CROP', SILVER: 'LEE_FILTER', GOLD: 'GOLD_EXPORT', FUSION: 'FUSION' };
+// Palet tier: lima hue kategorikal, divalidasi terhadap permukaan gelap
+// #121A2B (lightness band, chroma floor, pemisahan CVD pasangan bersebelahan,
+// dan kontras). SILVER dulu #9FB0C9 yang chroma-nya di bawah ambang (terbaca
+// abu-abu) dan cuma berjarak dE 12 dari GOLD -- dua tier bersebelahan yang
+// sulit dibedakan bahkan dengan penglihatan warna normal.
+const TIER_COLORS = { RAW: '#9070E8', BRONZE: '#C4762E', SILVER: '#4A8CE0', GOLD: '#2FA07E', FUSION: '#B565D8' };
+
+// Palet source untuk panel Struktur. Sengaja jadi satu-satunya dimensi warna
+// di panel itu -- tier di sana ditandai teks, bukan warna -- supaya satu hue
+// tidak pernah berarti dua hal dalam satu komponen.
+const SOURCE_COLORS = { sentinel1: '#5B8DEF', modis: '#2FA07E', gpm: '#C4762E' };
+const SOURCE_LABELS = { sentinel1: 'Sentinel-1', modis: 'MODIS', gpm: 'GPM', fusion: 'Fusion' };
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
-const state = { datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null, regions: [], selectedRegionId: null, openScenes: new Set() };
+const state = {
+  datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null,
+  openScenes: new Set(), openStructure: new Set(),
+  // Lokasi: daftar dari /api/regions, filter pencarian, dan pilihan yang dipakai
+  // "Buat Dataset". selectedRegionId adalah satu-satunya sumber kebenaran lokasi.
+  regions: [], selectedRegionId: null, locationQuery: '',
+  geoResults: [], pendingDeleteRegionId: null,
+};
 
 async function api(path, options) {
   const opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
@@ -48,10 +67,10 @@ function statusToClass(status) {
 
 function buildRingSVG(ratios, size) {
   size = size || 96;
-  const tiers = ['RAW', 'BRONZE', 'SILVER', 'GOLD'];
+  const tiers = TIER_ORDER;
   const cx = size / 2, cy = size / 2;
-  const baseR = size * 0.14;
-  const step = size * 0.11;
+  const baseR = size * 0.12;
+  const step = size * 0.09;
   let circles = '';
   tiers.forEach((t, i) => {
     const r = baseR + step * i;
@@ -65,7 +84,7 @@ function buildRingSVG(ratios, size) {
 }
 
 function tierCompletionRatios(scenes, requiredTiers) {
-  const tiers = ['RAW', 'BRONZE', 'SILVER', 'GOLD'];
+  const tiers = TIER_ORDER;
   const ratios = {};
   const total = scenes.length;
   tiers.forEach(t => {
@@ -87,11 +106,14 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('hidden', v.id !== ('view-' + name)));
   document.getElementById('mapUI').classList.toggle('hidden', name !== 'create');
-  if (name === 'create' && bgMap) requestAnimationFrame(() => { bgMap.invalidateSize(); positionMapHint(); if (selectedBBox) fitBBoxToGap(selectedBBox, false); });
+  document.getElementById('mapMask').classList.toggle('hidden', name !== 'create');
+  document.body.classList.toggle('tab-create', name === 'create');
+  if (name === 'create' && bgMap) requestAnimationFrame(() => { bgMap.invalidateSize(); updateMapMask(); positionMapHint(); if (selectedBBox) fitBBoxToGap(selectedBBox, false); });
   if (name === 'datasets') { loadDatasets(); startDatasetPolling(); } else { stopDatasetPolling(); }
   if (name === 'live') { loadLive(); startLivePolling(); } else { stopLivePolling(); }
 }
 document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+document.body.classList.add('tab-create');
 
 const floatNav = document.getElementById('floatNav');
 floatNav.querySelector('.floatnav-brand').addEventListener('click', () => floatNav.classList.toggle('expanded'));
@@ -120,7 +142,6 @@ const COLOR_TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, Int
 
 let mapActivated = false;
 let selectedBBox = null; // [minLon, minLat, maxLon, maxLat]
-let boxDrag = null;
 const DEFAULT_HINT = 'Pilih lokasi atau seret peta untuk mengubah area';
 
 // The map is the whole app's background: #bgMap fills the viewport and is fully interactive
@@ -142,13 +163,16 @@ function initBgMap() {
   }).setView([-6.28, 106.85], 10);
   L.tileLayer(COLOR_TILE_URL, { maxZoom: 19, attribution: COLOR_TILE_ATTR }).addTo(bgMap);
   bgMap.on('move zoom', syncSelectionBoxFromBBox);
-  window.addEventListener('resize', () => {
+  const relayout = () => {
     bgMap.invalidateSize();
+    updateMapMask();
     positionMapHint();
-    if (selectedBBox) fitBBoxToGap(selectedBBox, false);
-  });
-  initSelectionBoxDrag();
-  requestAnimationFrame(() => { bgMap.invalidateSize(); positionMapHint(); });
+    if (selectedBBox) { fitBBoxToGap(selectedBBox, false); syncSelectionBoxFromBBox(); }
+  };
+  window.addEventListener('resize', relayout);
+  window.addEventListener('scroll', () => { updateMapMask(); positionMapHint(); }, { passive: true });
+  initMapZoomButtons();
+  requestAnimationFrame(relayout);
 }
 initBgMap();
 
@@ -168,10 +192,63 @@ function positionMapHint() {
   const r = getMapGapRect();
   if (!chip || !r) return;
   chip.style.left = (r.left + r.width / 2) + 'px';
+  chip.style.top = (r.top + 14) + 'px';
+}
+
+const MAP_RADIUS = 18;
+
+// Penutup di luar jendela peta. Satu path SVG: persegi layar penuh, lalu subpath
+// persegi panjang rounded searah sama -> dengan fill-rule evenodd bagian dalam
+// jadi lubang. Hit-test SVG menghormati fill-rule, jadi path ini juga yang
+// memblokir drag/zoom peta di luar jendela, dengan sudut membulat yang presisi.
+function roundedRectPath(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  return 'M' + (x + r) + ' ' + y +
+    'H' + (x + w - r) + 'A' + r + ' ' + r + ' 0 0 1 ' + (x + w) + ' ' + (y + r) +
+    'V' + (y + h - r) + 'A' + r + ' ' + r + ' 0 0 1 ' + (x + w - r) + ' ' + (y + h) +
+    'H' + (x + r) + 'A' + r + ' ' + r + ' 0 0 1 ' + x + ' ' + (y + h - r) +
+    'V' + (y + r) + 'A' + r + ' ' + r + ' 0 0 1 ' + (x + r) + ' ' + y + 'Z';
+}
+
+function updateMapMask() {
+  const mask = document.getElementById('mapMask');
+  const path = document.getElementById('mapMaskPath');
+  const clip = document.getElementById('mapClip');
+  const r = getMapGapRect();
+  if (!mask || !path) return;
+  if (!r) { mask.classList.add('hidden'); return; }
+  const W = window.innerWidth, H = window.innerHeight;
+  mask.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  path.setAttribute('d',
+    'M0 0H' + W + 'V' + H + 'H0Z ' + roundedRectPath(r.left, r.top, r.width, r.height, MAP_RADIUS));
+  if (clip) {
+    clip.style.left = r.left + 'px';
+    clip.style.top = r.top + 'px';
+    clip.style.width = r.width + 'px';
+    clip.style.height = r.height + 'px';
+  }
+}
+
+// Saat sebuah wilayah baru dipilih, kotaknya tidak boleh memenuhi jendela peta:
+// batasnya 60% dari tinggi (dan lebar) jendela, agar konteks sekitarnya tetap terlihat.
+// Pengguna tetap bebas memperbesar dengan drag/zoom setelahnya.
+const MAX_SELECTION_FRAC = 0.6;
+
+// fitBounds membuat bbox mengisi ~seluruh area yang tersisa, jadi yang di-fit adalah
+// bbox yang sudah dimekarkan 1/0.6 kali terhadap titik tengahnya -- hasilnya bbox asli
+// menempati ~60%. Pembulatan zoom Leaflet hanya bisa mengecilkan, jadi batas ini aman.
+function inflateBBox(bbox, frac) {
+  const cx = (bbox[0] + bbox[2]) / 2, cy = (bbox[1] + bbox[3]) / 2;
+  const hw = (bbox[2] - bbox[0]) / 2 / frac, hh = (bbox[3] - bbox[1]) / 2 / frac;
+  return [
+    Math.max(-180, cx - hw), Math.max(-85, cy - hh),
+    Math.min(180, cx + hw), Math.min(85, cy + hh)
+  ];
 }
 
 function fitBBoxToGap(bbox, animate) {
-  const minLon = bbox[0], minLat = bbox[1], maxLon = bbox[2], maxLat = bbox[3];
+  const fit = inflateBBox(bbox, MAX_SELECTION_FRAC);
+  const minLon = fit[0], minLat = fit[1], maxLon = fit[2], maxLat = fit[3];
   const r = getMapGapRect();
   const opts = { animate: animate !== false };
   if (r) {
@@ -187,6 +264,7 @@ function updateMapPreview(bbox) {
   activateMap();
   selectedBBox = bbox.slice();
   bgMap.invalidateSize();
+  updateMapMask();
   positionMapHint();
   fitBBoxToGap(selectedBBox, true);
   syncSelectionBoxFromBBox();
@@ -213,8 +291,13 @@ function syncSelectionBoxFromBBox() {
   const minLon = selectedBBox[0], minLat = selectedBBox[1], maxLon = selectedBBox[2], maxLat = selectedBBox[3];
   const p1 = bgMap.latLngToContainerPoint([maxLat, minLon]);
   const p2 = bgMap.latLngToContainerPoint([minLat, maxLon]);
-  box.style.left = Math.min(p1.x, p2.x) + 'px';
-  box.style.top = Math.min(p1.y, p2.y) + 'px';
+  // #mapClip diposisikan pada rect jendela peta, sedangkan titik Leaflet berada di
+  // koordinat viewport (peta memenuhi layar) -- kurangi offset jendela agar kotak
+  // tetap terkunci di lokasi geografisnya saat peta digeser.
+  const gap = getMapGapRect();
+  const ox = gap ? gap.left : 0, oy = gap ? gap.top : 0;
+  box.style.left = (Math.min(p1.x, p2.x) - ox) + 'px';
+  box.style.top = (Math.min(p1.y, p2.y) - oy) + 'px';
   box.style.width = Math.max(24, Math.abs(p2.x - p1.x)) + 'px';
   box.style.height = Math.max(24, Math.abs(p2.y - p1.y)) + 'px';
 }
@@ -226,60 +309,100 @@ function renderBBoxReadout() {
     'Area: <span class="val">' + minLat.toFixed(3) + ', ' + minLon.toFixed(3) + '</span> &rarr; <span class="val">' + maxLat.toFixed(3) + ', ' + maxLon.toFixed(3) + '</span>';
 }
 
-function initSelectionBoxDrag() {
-  const box = document.getElementById('mapSelectionBox');
-  box.addEventListener('pointerdown', (e) => {
-    if (!mapActivated || !selectedBBox) return;
-    box.setPointerCapture(e.pointerId);
-    box.classList.add('dragging');
-    boxDrag = { startX: e.clientX, startY: e.clientY, startBBox: selectedBBox.slice() };
-  });
-  box.addEventListener('pointermove', (e) => {
-    if (!boxDrag) return;
-    const dx = e.clientX - boxDrag.startX;
-    const dy = e.clientY - boxDrag.startY;
-    const origin = bgMap.latLngToContainerPoint([boxDrag.startBBox[1], boxDrag.startBBox[0]]);
-    const shifted = bgMap.containerPointToLatLng([origin.x + dx, origin.y + dy]);
-    const lonDelta = shifted.lng - boxDrag.startBBox[0];
-    const latDelta = shifted.lat - boxDrag.startBBox[1];
-    selectedBBox = [
-      boxDrag.startBBox[0] + lonDelta, boxDrag.startBBox[1] + latDelta,
-      boxDrag.startBBox[2] + lonDelta, boxDrag.startBBox[3] + latDelta,
-    ];
-    syncSelectionBoxFromBBox();
-  });
-  const endDrag = (e) => {
-    if (!boxDrag) return;
-    box.classList.remove('dragging');
-    boxDrag = null;
-    renderBBoxReadout();
+function initMapZoomButtons() {
+  document.getElementById('mapZoomIn').addEventListener('click', () => bgMap.zoomIn());
+  document.getElementById('mapZoomOut').addEventListener('click', () => bgMap.zoomOut());
+}
+
+// ---------------------------------------------------------------------------
+// Lokasi: daftar dari tabel regions_of_interest (bukan lagi config.json)
+// ---------------------------------------------------------------------------
+// State pemilihan lokasi cukup satu variabel: state.selectedRegionId. Nilainya
+// yang dikirim ke POST /api/datasets sebagai region_id, jadi tidak ada lagi
+// pencocokan nama yang bisa salah kalau ada dua lokasi dengan nama mirip.
+
+function debounce(fn, wait) {
+  let timer = null;
+  return function () {
+    const args = arguments;
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(null, args), wait);
   };
-  box.addEventListener('pointerup', endDrag);
-  box.addEventListener('pointercancel', endDrag);
+}
+
+function fmtBBox(bbox) {
+  if (!bbox || bbox.length !== 4) return '';
+  return bbox[1].toFixed(3) + ', ' + bbox[0].toFixed(3) + ' → ' +
+         bbox[3].toFixed(3) + ', ' + bbox[2].toFixed(3);
+}
+
+const SOURCE_LABEL = { SEEDER: 'sistem', USER: 'buatan sendiri', GEOCODE: 'hasil pencarian' };
+
+// Filter lokal supaya ketikan langsung terasa (tanpa menunggu jaringan). Query
+// yang sama juga dikirim ke server setelah debounce, untuk menjaring lokasi yang
+// belum ikut terambil kalau daftarnya panjang (limit 200 per request).
+function visibleRegions() {
+  const q = state.locationQuery.trim().toLowerCase();
+  if (!q) return state.regions;
+  return state.regions.filter(r =>
+    r.name.toLowerCase().includes(q) || (r.region_code || '').toLowerCase().includes(q));
 }
 
 function renderRegionCards() {
   const grid = document.getElementById('regionGrid');
-  grid.innerHTML = state.regions.map(r =>
-    '<div class="region-card" data-region-id="' + r.region_id + '">' +
-      '<div class="region-check"></div>' +
-      '<div class="region-name">' + escapeHTML(r.name) + '</div>' +
-      '<div class="region-area">' + (r.area_km2 ? r.area_km2.toFixed(1) + ' km2' : '') + '</div>' +
+  const rows = visibleRegions();
+  if (rows.length === 0) {
+    grid.innerHTML = '<div class="empty-small">' +
+      (state.locationQuery.trim()
+        ? 'Tidak ada lokasi cocok dengan "' + escapeHTML(state.locationQuery.trim()) + '"'
+        : 'Belum ada lokasi. Tambahkan lewat tombol di atas.') +
+      '</div>';
+    return;
+  }
+  grid.innerHTML = rows.map(r =>
+    '<div class="region-card' + (r.region_id === state.selectedRegionId ? ' selected' : '') + '"' +
+         ' data-region-id="' + r.region_id + '" role="button" tabindex="0">' +
+      '<div class="region-body">' +
+        '<div class="region-name">' + escapeHTML(r.name) + '</div>' +
+        '<div class="region-bbox">' + fmtBBox(r.bbox) + '</div>' +
+        '<div class="region-meta">' +
+          (r.area_km2 ? '<span class="region-area">' + r.area_km2.toFixed(1) + ' km&sup2;</span>' : '') +
+          '<span class="src-badge src-' + escapeHTML((r.source || 'SEEDER').toLowerCase()) + '">' +
+            escapeHTML(SOURCE_LABEL[r.source] || 'sistem') +
+          '</span>' +
+        '</div>' +
+      '</div>' +
+      (r.deletable
+        ? '<button type="button" class="region-del" data-del-id="' + r.region_id + '"' +
+          ' title="Hapus lokasi" aria-label="Hapus ' + escapeHTML(r.name) + '">' + ICONS.trash + '</button>'
+        : '') +
     '</div>'
   ).join('');
+
   grid.querySelectorAll('.region-card').forEach(card => {
-    card.addEventListener('click', () => selectRegion(Number(card.dataset.regionId)));
+    const id = Number(card.dataset.regionId);
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.region-del')) return;
+      selectRegion(id);
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectRegion(id); }
+    });
+  });
+  grid.querySelectorAll('.region-del').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDeleteLocationModal(Number(btn.dataset.delId));
+    });
   });
 }
 
 function selectRegion(id) {
   state.selectedRegionId = id;
-  document.querySelectorAll('.region-card').forEach(c => c.classList.toggle('selected', Number(c.dataset.regionId) === id));
+  document.querySelectorAll('.region-card').forEach(c =>
+    c.classList.toggle('selected', Number(c.dataset.regionId) === id));
   const region = state.regions.find(r => r.region_id === id);
-  if (region) {
-    document.getElementById('fLocation').value = region.name;
-    updateMapPreview(region.bbox);
-  }
+  if (region) updateMapPreview(region.bbox);
 }
 
 function clearRegionSelection() {
@@ -288,40 +411,244 @@ function clearRegionSelection() {
   clearMapPreview();
 }
 
-document.getElementById('fLocation').addEventListener('input', () => {
-  const val = document.getElementById('fLocation').value.trim().toLowerCase();
-  const match = state.regions.find(r => r.name.toLowerCase() === val);
-  if (match) {
-    state.selectedRegionId = match.region_id;
-    document.querySelectorAll('.region-card').forEach(c => c.classList.toggle('selected', Number(c.dataset.regionId) === match.region_id));
-    updateMapPreview(match.bbox);
-  } else {
-    document.querySelectorAll('.region-card').forEach(c => c.classList.remove('selected'));
-    state.selectedRegionId = null;
-    if (val === '') clearMapPreview();
+async function loadRegions(options) {
+  const opts = options || {};
+  const grid = document.getElementById('regionGrid');
+  try {
+    const q = state.locationQuery.trim();
+    const result = await api('/api/regions' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    state.regions = result.items;
+    // Lokasi terpilih bisa hilang dari hasil filter; itu tidak membatalkan pilihan,
+    // hanya menyembunyikan kartunya sampai filter dikosongkan lagi.
+    renderRegionCards();
+    if (opts.highlightId) {
+      const card = grid.querySelector('[data-region-id="' + opts.highlightId + '"]');
+      if (card) {
+        card.classList.add('just-added');
+        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+  } catch (e) {
+    grid.innerHTML = '<div class="empty-small">Gagal memuat daftar lokasi</div>';
+  }
+}
+
+const loadRegionsDebounced = debounce(() => loadRegions(), 260);
+
+document.getElementById('locSearch').addEventListener('input', (e) => {
+  state.locationQuery = e.target.value;
+  renderRegionCards();      // instan, dari data yang sudah ada
+  loadRegionsDebounced();   // menyusul, mencakup lokasi di luar 200 baris pertama
+});
+
+// ---------------------------------------------------------------------------
+// Modal: tambah lokasi
+// ---------------------------------------------------------------------------
+const addLocModal = document.getElementById('addLocationModal');
+
+function setLocTab(name) {
+  document.querySelectorAll('.modal-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.loctab === name));
+  document.getElementById('loctabSearch').classList.toggle('hidden', name !== 'search');
+  document.getElementById('loctabManual').classList.toggle('hidden', name !== 'manual');
+}
+
+function setAddLocError(msg) {
+  const el = document.getElementById('alError');
+  el.textContent = msg || '';
+  el.classList.toggle('hidden', !msg);
+}
+
+function openAddLocationModal() {
+  ['alName', 'alPaste', 'alMinLon', 'alMinLat', 'alMaxLon', 'alMaxLat', 'alDesc', 'geoSearchInput']
+    .forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('geoResults').innerHTML =
+    '<p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>';
+  setAddLocError('');
+  setLocTab('search');
+  addLocModal.classList.remove('hidden');
+  setTimeout(() => document.getElementById('geoSearchInput').focus(), 30);
+}
+
+function closeAddLocationModal() { addLocModal.classList.add('hidden'); }
+
+document.getElementById('addLocationBtn').addEventListener('click', openAddLocationModal);
+document.getElementById('alCancel').addEventListener('click', closeAddLocationModal);
+addLocModal.addEventListener('click', (e) => { if (e.target === addLocModal) closeAddLocationModal(); });
+document.querySelectorAll('.modal-tab').forEach(t =>
+  t.addEventListener('click', () => setLocTab(t.dataset.loctab)));
+
+// Bagian A: pencarian nama lewat proxy /api/regions/geocode (Nominatim).
+// Debounce 400 ms karena Nominatim membatasi 1 request/detik per klien.
+const runGeoSearch = debounce(async (query) => {
+  const box = document.getElementById('geoResults');
+  if (query.length < 2) {
+    box.innerHTML = '<p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>';
+    return;
+  }
+  box.innerHTML = '<p class="geo-hint">Mencari...</p>';
+  try {
+    const result = await api('/api/regions/geocode?q=' + encodeURIComponent(query));
+    state.geoResults = result.items;
+    if (!result.items.length) {
+      box.innerHTML = '<p class="geo-hint">Tidak ada hasil untuk "' + escapeHTML(query) + '"</p>';
+      return;
+    }
+    box.innerHTML = result.items.map((it, i) =>
+      '<button type="button" class="geo-item" data-geo-index="' + i + '">' +
+        '<span class="geo-item-icon">' + ICONS.pin + '</span>' +
+        '<span class="geo-item-text">' +
+          '<span class="geo-item-name">' + escapeHTML(it.name) + '</span>' +
+          '<span class="geo-item-sub">' + escapeHTML(it.display_name) + '</span>' +
+          '<span class="geo-item-bbox">' + fmtBBox(it.bbox) + '</span>' +
+        '</span>' +
+      '</button>'
+    ).join('');
+    box.querySelectorAll('.geo-item').forEach(btn => {
+      btn.addEventListener('click', () => useGeoResult(state.geoResults[Number(btn.dataset.geoIndex)]));
+    });
+  } catch (err) {
+    box.innerHTML = '<p class="geo-hint error">' + escapeHTML(err.message) + '</p>';
+  }
+}, 400);
+
+document.getElementById('geoSearchInput').addEventListener('input', (e) => {
+  runGeoSearch(e.target.value.trim());
+});
+
+// Hasil pencarian tidak langsung disimpan: isi form koordinat lalu pindah ke tab
+// manual, supaya pengguna melihat bbox persisnya sebelum menekan Simpan.
+function useGeoResult(item) {
+  if (!item) return;
+  document.getElementById('alName').value = item.name;
+  document.getElementById('alMinLon').value = item.bbox[0];
+  document.getElementById('alMinLat').value = item.bbox[1];
+  document.getElementById('alMaxLon').value = item.bbox[2];
+  document.getElementById('alMaxLat').value = item.bbox[3];
+  document.getElementById('alDesc').value = item.display_name;
+  setAddLocError('');
+  setLocTab('manual');
+}
+
+// Tempel "min_lon, min_lat, max_lon, max_lat" (urutan bbox GDAL/GeoJSON).
+document.getElementById('alPaste').addEventListener('input', (e) => {
+  const nums = (e.target.value.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+  if (nums.length !== 4) return;
+  document.getElementById('alMinLon').value = nums[0];
+  document.getElementById('alMinLat').value = nums[1];
+  document.getElementById('alMaxLon').value = nums[2];
+  document.getElementById('alMaxLat').value = nums[3];
+  setAddLocError('');
+});
+
+// Validasi di sini hanya untuk umpan balik cepat; API tetap yang menentukan,
+// aturannya ada di etl/geo_utils.validate_bbox.
+function readAddLocationForm() {
+  const num = (id) => {
+    const raw = document.getElementById(id).value.trim();
+    return raw === '' ? NaN : Number(raw);
+  };
+  const name = document.getElementById('alName').value.trim();
+  const b = { min_lon: num('alMinLon'), min_lat: num('alMinLat'), max_lon: num('alMaxLon'), max_lat: num('alMaxLat') };
+  if (!name) return { error: 'Nama lokasi belum diisi' };
+  if ([b.min_lon, b.min_lat, b.max_lon, b.max_lat].some(v => !isFinite(v))) {
+    return { error: 'Keempat koordinat harus diisi dengan angka' };
+  }
+  if (b.min_lon < -180 || b.max_lon > 180) return { error: 'Longitude harus di rentang -180 sampai 180' };
+  if (b.min_lat < -90 || b.max_lat > 90) return { error: 'Latitude harus di rentang -90 sampai 90' };
+  if (b.min_lon >= b.max_lon) return { error: 'Longitude minimum harus lebih kecil dari longitude maksimum' };
+  if (b.min_lat >= b.max_lat) return { error: 'Latitude minimum harus lebih kecil dari latitude maksimum' };
+  return { body: Object.assign({ name: name, description: document.getElementById('alDesc').value.trim() || null }, b) };
+}
+
+document.getElementById('alSave').addEventListener('click', async () => {
+  const parsed = readAddLocationForm();
+  if (parsed.error) { setAddLocError(parsed.error); setLocTab('manual'); return; }
+  const btn = document.getElementById('alSave');
+  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  try {
+    const created = await api('/api/regions', { method: 'POST', body: JSON.stringify(parsed.body) });
+    closeAddLocationModal();
+    // Kosongkan filter supaya lokasi yang baru dibuat pasti terlihat.
+    state.locationQuery = '';
+    document.getElementById('locSearch').value = '';
+    await loadRegions({ highlightId: created.region_id });
+    selectRegion(created.region_id);
+    showToast('Lokasi "' + created.name + '" ditambahkan', 'success');
+  } catch (err) {
+    setAddLocError(err.message);
+    setLocTab('manual');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Simpan Lokasi';
   }
 });
 
-async function loadRegions() {
-  try {
-    const result = await api('/api/regions');
-    state.regions = result.items;
-    renderRegionCards();
-  } catch (e) {
-    document.getElementById('regionGrid').innerHTML = '<div class="empty-small">Gagal memuat daftar wilayah</div>';
-  }
+// ---------------------------------------------------------------------------
+// Modal: hapus lokasi (soft-delete)
+// ---------------------------------------------------------------------------
+const delLocModal = document.getElementById('deleteLocationModal');
+
+function openDeleteLocationModal(id) {
+  const region = state.regions.find(r => r.region_id === id);
+  if (!region) return;
+  state.pendingDeleteRegionId = id;
+  document.getElementById('deleteLocationText').innerHTML =
+    'Lokasi <strong>' + escapeHTML(region.name) + '</strong> akan dihilangkan dari daftar pilihan.';
+  delLocModal.classList.remove('hidden');
 }
+
+function closeDeleteLocationModal() {
+  state.pendingDeleteRegionId = null;
+  delLocModal.classList.add('hidden');
+}
+
+document.getElementById('deleteLocationCancel').addEventListener('click', closeDeleteLocationModal);
+delLocModal.addEventListener('click', (e) => { if (e.target === delLocModal) closeDeleteLocationModal(); });
+
+document.getElementById('deleteLocationConfirm').addEventListener('click', async () => {
+  const id = state.pendingDeleteRegionId;
+  if (!id) return;
+  const btn = document.getElementById('deleteLocationConfirm');
+  btn.disabled = true; btn.textContent = 'Menghapus...';
+  try {
+    const result = await api('/api/regions/' + id, { method: 'DELETE' });
+    closeDeleteLocationModal();
+    const card = document.querySelector('.region-card[data-region-id="' + id + '"]');
+    if (card) {
+      card.classList.add('removing');
+      await new Promise(r => setTimeout(r, 180));
+    }
+    if (state.selectedRegionId === id) clearRegionSelection();
+    await loadRegions();
+    showToast(result.message, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+    closeDeleteLocationModal();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Ya, Hapus';
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!addLocModal.classList.contains('hidden')) closeAddLocationModal();
+  if (!delLocModal.classList.contains('hidden')) closeDeleteLocationModal();
+});
+
+document.getElementById('addLocationIcon').innerHTML = ICONS.plus;
+document.getElementById('locSearchIcon').innerHTML = ICONS.search;
 loadRegions();
 
 document.getElementById('createForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const tiers = Array.from(document.querySelectorAll('.tier-check:checked')).map(c => c.value);
   if (tiers.length === 0) { showToast('Pilih minimal satu tier data', 'error'); return; }
-  const location = document.getElementById('fLocation').value.trim();
+  const regionId = state.selectedRegionId;
   const dateStart = document.getElementById('fDateStart').value;
   const dateEnd = document.getElementById('fDateEnd').value;
   const name = document.getElementById('fName').value.trim();
-  if (!location || !dateStart || !dateEnd || !name) { showToast('Lengkapi lokasi, tanggal, dan nama dataset', 'error'); return; }
+  if (!regionId) { showToast('Pilih dulu lokasi dari daftar', 'error'); return; }
+  if (!dateStart || !dateEnd || !name) { showToast('Lengkapi tanggal dan nama dataset', 'error'); return; }
   const qs = {};
   const cloud = document.getElementById('fMinCloud').value;
   const qual = document.getElementById('fMinQuality').value;
@@ -330,7 +657,7 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
   if (qual !== '') qs.min_quality_score = Number(qual);
   if (res !== '') qs.resolution_m = Number(res);
   const body = {
-    location: location, date_start: dateStart, date_end: dateEnd, tiers: tiers, name: name,
+    region_id: regionId, date_start: dateStart, date_end: dateEnd, tiers: tiers, name: name,
     description: document.getElementById('fDescription').value.trim() || null,
     quality_settings: Object.keys(qs).length ? qs : null,
   };
@@ -340,8 +667,7 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
     const result = await api('/api/datasets', { method: 'POST', body: JSON.stringify(body) });
     showToast('Dataset dibuat (status: ' + result.status + ')', 'success');
     e.target.reset();
-    document.getElementById('fLocation').value = '';
-    document.querySelectorAll('.tier-check').forEach(c => c.checked = c.value === 'GOLD');
+    document.querySelectorAll('.tier-check').forEach(c => c.checked = c.value === 'FUSION');
     clearRegionSelection();
     switchTab('datasets');
   } catch (err) {
@@ -435,10 +761,13 @@ function renderDatasetCard(ds) {
       (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
       '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
       '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
+      (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
     '</div>' +
-    '<div class="card-scenes' + (state.openScenes.has(ds.dataset_id) ? '' : ' hidden') + '" id="scenes-' + ds.dataset_id + '"></div>';
+    '<div class="card-scenes' + (state.openScenes.has(ds.dataset_id) ? '' : ' hidden') + '" id="scenes-' + ds.dataset_id + '"></div>' +
+    '<div class="card-structure' + (state.openStructure.has(ds.dataset_id) ? '' : ' hidden') + '" id="structure-' + ds.dataset_id + '"></div>';
   el.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', () => handleCardAction(btn.dataset.action, ds.dataset_id)));
   if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
+  if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
   return el;
 }
 
@@ -511,6 +840,11 @@ async function handleCardAction(action, id) {
     box.classList.toggle('hidden');
     if (!box.classList.contains('hidden')) { state.openScenes.add(id); renderSceneTable(box, id); }
     else { state.openScenes.delete(id); }
+  } else if (action === 'toggle-structure') {
+    const box = document.getElementById('structure-' + id);
+    box.classList.toggle('hidden');
+    if (!box.classList.contains('hidden')) { state.openStructure.add(id); renderStructurePanel(box, id); }
+    else { state.openStructure.delete(id); }
   }
 }
 
@@ -626,3 +960,140 @@ document.addEventListener('keydown', (e) => {
 });
 
 switchTab('create');
+
+
+// ---------------------------------------------------------------------------
+// Panel "Struktur": rincian storage per tier x source, kualitas per source,
+// dan daftar berkas per tier. Semua angkanya berasal dari
+// folder_manager.storage_breakdown lewat /api/datasets/{id}/storage/summary,
+// sumber yang sama dengan metadata.json -- jadi UI dan file di disk tidak bisa
+// bercerita beda.
+// ---------------------------------------------------------------------------
+
+function sourceColor(src) { return SOURCE_COLORS[src] || 'var(--text-dim)'; }
+function sourceLabel(src) { return SOURCE_LABELS[src] || src; }
+
+async function renderStructurePanel(box, id) {
+  box.innerHTML = '<div class="empty-small">Memuat struktur…</div>';
+
+  let storage;
+  try {
+    storage = await api('/api/datasets/' + id + '/storage/summary');
+  } catch (e) {
+    box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
+    return;
+  }
+
+  // Kualitas opsional: dataset yang belum sempat lewat tahap analitik tetap
+  // harus bisa menampilkan rincian storage-nya.
+  let quality = { sources: [] };
+  try { quality = await api('/api/quality/dataset/' + id + '/by-source'); } catch (e) {}
+
+  box.innerHTML =
+    renderStorageBreakdown(id, storage) +
+    renderQualityBySource(quality) +
+    '<div class="struct-files" id="structfiles-' + id + '"></div>';
+
+  box.querySelectorAll('[data-tier-files]').forEach(btn => {
+    btn.addEventListener('click', () => loadTierFiles(id, btn.dataset.tierFiles));
+  });
+}
+
+function renderStorageBreakdown(id, storage) {
+  const tiers = TIER_ORDER.map(t => [t, storage.tiers[t.toLowerCase()]]).filter(([, v]) => v && v.file_count > 0);
+  if (tiers.length === 0) return '<div class="empty-small">Belum ada berkas di disk</div>';
+
+  const maxBytes = Math.max.apply(null, tiers.map(([, v]) => v.size_bytes));
+  const usedSources = Object.keys(storage.sources).filter(s => s !== 'fusion');
+
+  const legend = usedSources.length > 1
+    ? '<div class="struct-legend">' + usedSources.map(src =>
+        '<span class="struct-legend-item">' +
+          '<span class="struct-swatch" style="background:' + sourceColor(src) + '"></span>' +
+          escapeHTML(sourceLabel(src)) +
+          '<span class="struct-legend-size">' + humanBytes(storage.sources[src].size_bytes) + '</span>' +
+        '</span>').join('') +
+      '</div>'
+    : '';
+
+  const rows = tiers.map(([tier, info]) => {
+    const widthPct = maxBytes > 0 ? (info.size_bytes / maxBytes) * 100 : 0;
+    const entries = Object.entries(info.sources);
+
+    // Tier fusion tidak punya pecahan source -- isinya justru gabungan
+    // ketiganya, jadi digambar sebagai satu batang netral.
+    const segments = entries.length > 0
+      ? entries.map(([src, v]) => {
+          const share = info.size_bytes > 0 ? (v.size_bytes / info.size_bytes) * 100 : 0;
+          return '<span class="struct-seg" style="flex:' + share + ' 1 0;background:' + sourceColor(src) + '"' +
+            ' title="' + escapeHTML(sourceLabel(src) + ' · ' + tier + ' · ' + humanBytes(v.size_bytes) + ' · ' + v.file_count + ' berkas') + '"></span>';
+        }).join('')
+      : '<span class="struct-seg struct-seg-mixed" style="flex:1 1 0" title="' +
+          escapeHTML('Gabungan semua source · ' + humanBytes(info.size_bytes)) + '"></span>';
+
+    const chips = entries.map(([src, v]) =>
+      '<a class="struct-chip" style="--src-color:' + sourceColor(src) + '"' +
+        ' href="/api/datasets/' + id + '/download?tier=' + tier.toLowerCase() + '&source=' + src + '"' +
+        ' title="' + escapeHTML('Unduh ' + sourceLabel(src) + ' ' + tier) + '">' +
+        escapeHTML(sourceLabel(src)) + ' <span class="struct-chip-size">' + humanBytes(v.size_bytes) + '</span>' +
+      '</a>').join('');
+
+    return '<div class="struct-row">' +
+        '<div class="struct-head">' +
+          '<span class="struct-tier">' + tier + '</span>' +
+          '<span class="struct-total">' + humanBytes(info.size_bytes) + '</span>' +
+          '<span class="struct-count">' + info.file_count + ' berkas · ' + info.scene_count + ' scene</span>' +
+          '<button class="btn-link" data-tier-files="' + tier.toLowerCase() + '">Berkas</button>' +
+          '<a class="btn-link" href="/api/datasets/' + id + '/download?tier=' + tier.toLowerCase() + '">Unduh</a>' +
+        '</div>' +
+        '<div class="struct-track"><div class="struct-bar" style="width:' + widthPct + '%">' + segments + '</div></div>' +
+        (chips ? '<div class="struct-chips">' + chips + '</div>' : '') +
+      '</div>';
+  }).join('');
+
+  return '<div class="struct-title">Storage per tier &amp; source</div>' + legend +
+    '<div class="struct-rows">' + rows + '</div>';
+}
+
+function renderQualityBySource(quality) {
+  if (!quality.sources || quality.sources.length === 0) return '';
+  const items = quality.sources.map(q => {
+    const bands = Object.entries(q.bands)
+      .map(([b, v]) => '<span class="qual-band">' + escapeHTML(b) + ' <b>' + v.toFixed(1) + '</b></span>')
+      .join('');
+    // RADIOMETRIC dan COVERAGE bukan skala yang sama -- labelnya ikut
+    // ditampilkan supaya tidak dibaca sebagai angka yang sebanding.
+    return '<div class="qual-row">' +
+        '<span class="qual-src">' + escapeHTML(sourceLabel(q.source.toLowerCase())) + '</span>' +
+        '<span class="badge ' + (q.quality_flag === 'GOOD' ? 'ok' : q.quality_flag === 'POOR' ? 'danger' : 'warn') + '">' +
+          (q.quality_score == null ? '-' : q.quality_score.toFixed(1)) +
+        '</span>' +
+        '<span class="qual-kind">' + (q.kind === 'RADIOMETRIC' ? 'radiometrik' : 'kelengkapan') + '</span>' +
+        '<span class="qual-bands">' + bands + '</span>' +
+      '</div>';
+  }).join('');
+  return '<div class="struct-title">Kualitas per source</div><div class="qual-rows">' + items + '</div>';
+}
+
+async function loadTierFiles(id, tier) {
+  const box = document.getElementById('structfiles-' + id);
+  if (!box) return;
+  if (box.dataset.tier === tier) { box.innerHTML = ''; box.dataset.tier = ''; return; }
+  box.dataset.tier = tier;
+  box.innerHTML = '<div class="empty-small">Memuat berkas…</div>';
+  try {
+    const data = await api('/api/datasets/' + id + '/storage/files/' + tier);
+    if (data.scenes.length === 0) { box.innerHTML = '<div class="empty-small">Tier ini kosong</div>'; return; }
+    box.innerHTML = '<table class="scene-table"><thead><tr><th>Source</th><th>Scene</th><th>Berkas</th><th>Ukuran</th></tr></thead><tbody>' +
+      data.scenes.map(sc => sc.files.map((f, i) =>
+        '<tr>' +
+          '<td>' + (i === 0 ? '<span class="struct-swatch" style="background:' + sourceColor(sc.source) + '"></span>' + escapeHTML(sourceLabel(sc.source || 'fusion')) : '') + '</td>' +
+          '<td class="mono small">' + (i === 0 ? escapeHTML(shortenSceneId(sc.scene)) : '') + '</td>' +
+          '<td class="mono small">' + escapeHTML(f.name) + '</td>' +
+          '<td>' + f.size_mb.toFixed(1) + ' MB</td>' +
+        '</tr>').join('')).join('') +
+      '</tbody></table>';
+  } catch (e) {
+    box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
+  }
+}

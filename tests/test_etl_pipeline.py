@@ -84,9 +84,13 @@ class TestEndToEndFlow:
                     f"Missing {tier} product for band={band}"
                 )
 
-        gold_products = meta.get_products_by_scene(ids["scene_id"], tier="GOLD", latest_only=True)
-        assert len(gold_products) == 1, "GOLD should have exactly 1 fused product, not per-band"
-        assert gold_products[0]["band_name"] == "FUSION"
+        # Stack fusion sekarang tinggal di tier FUSION sendiri; GOLD berisi
+        # produk analysis-ready per-source (migrasi 013).
+        fusion_products = meta.get_products_by_scene(
+            ids["scene_id"], tier="FUSION", latest_only=True
+        )
+        assert len(fusion_products) == 1, "FUSION should have exactly 1 fused product, not per-band"
+        assert fusion_products[0]["band_name"] == "FUSION"
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +121,12 @@ class TestMetadataTracking:
 
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="FUSION_H5",
+            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/test_fusion.h5", file_name="test_fusion.h5",
             file_size_mb=40.0, data_hash_sha256=fake_hash("TRACK_FUSION"), file_format="HDF5",
         )
 
-        products = meta.get_products_by_scene(sample_scene, tier="GOLD")
+        products = meta.get_products_by_scene(sample_scene, tier="FUSION")
         fusion = next((p for p in products if p["band_name"] == "FUSION"), None)
         assert fusion is not None
         assert fusion["job_id"] == job_id
@@ -133,7 +137,7 @@ class TestMetadataTracking:
         meta.start_job(job_id)
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", product_type="LEE_FILTERED",
+            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED",
             band_name="VH", file_path="/tmp/vh.tif", file_name="vh.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("QUALITY_VH"),
         )
@@ -155,14 +159,14 @@ class TestMetadataTracking:
         # First product
         pid1 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="FUSION_H5",
+            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/f1.h5", file_name="f1.h5",
             file_size_mb=40.0, data_hash_sha256=fake_hash("LATEST_V1"), file_format="HDF5",
         )
         # Second product (same tier+band → should mark pid1 as not latest)
         pid2 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", product_type="FUSION_H5",
+            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/f2.h5", file_name="f2.h5",
             file_size_mb=39.0, data_hash_sha256=fake_hash("LATEST_V2"), file_format="HDF5",
         )
@@ -187,7 +191,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/score_test.tif", file_name="score_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("SCORE_RANGE"),
         )
@@ -208,7 +212,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VH",
+            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VH",
             file_path="/tmp/flag_test.tif", file_name="flag_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("FLAG_TEST"),
         )
@@ -228,7 +232,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/nodata_test.tif", file_name="nodata_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("NODATA_TEST"),
         )
@@ -260,25 +264,25 @@ class TestLineageTracking:
 
         raw_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=dl_job,
-            product_tier="RAW",    product_type="ORIGINAL_TIFF", band_name="VV",
+            product_tier="RAW", source="SENTINEL1",    product_type="ORIGINAL_TIFF", band_name="VV",
             file_path="/tmp/raw.tif", file_name="raw.tif",
             file_size_mb=400.0, data_hash_sha256=fake_hash("LIN_RAW"),
         )
         bronze_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=crop_job,
-            product_tier="BRONZE", product_type="CROPPED_TIFF", band_name="VV",
+            product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VV",
             file_path="/tmp/bronze.tif", file_name="bronze.tif",
             file_size_mb=48.0, data_hash_sha256=fake_hash("LIN_BRONZE"),
         )
         silver_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=lee_job,
-            product_tier="SILVER", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/silver.tif", file_name="silver.tif",
             file_size_mb=45.0, data_hash_sha256=fake_hash("LIN_SILVER"),
         )
         gold_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=fusion_job,
-            product_tier="GOLD",   product_type="FUSION_H5", band_name="FUSION",
+            product_tier="FUSION", source="FUSION",   product_type="FUSION_H5", band_name="FUSION",
             file_path="/tmp/gold.h5", file_name="gold.h5",
             file_size_mb=41.0, data_hash_sha256=fake_hash("LIN_GOLD"), file_format="HDF5",
         )
@@ -303,13 +307,13 @@ class TestLineageTracking:
 
         raw_id    = meta.insert_data_product(
             scene_id=sample_scene, job_id=dl_job,
-            product_tier="RAW", product_type="ORIGINAL_TIFF", band_name="VH",
+            product_tier="RAW", source="SENTINEL1", product_type="ORIGINAL_TIFF", band_name="VH",
             file_path="/tmp/raw_desc.tif", file_name="raw_desc.tif",
             file_size_mb=400.0, data_hash_sha256=fake_hash("DESC_RAW"),
         )
         bronze_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=cr_job,
-            product_tier="BRONZE", product_type="CROPPED_TIFF", band_name="VH",
+            product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VH",
             file_path="/tmp/brnz_desc.tif", file_name="brnz_desc.tif",
             file_size_mb=48.0, data_hash_sha256=fake_hash("DESC_BRONZE"),
         )
@@ -325,42 +329,81 @@ class TestLineageTracking:
 # ---------------------------------------------------------------------------
 
 class TestCheckpointSystem:
-    """Verify PostgreSQL-backed checkpoint and pipeline resume logic."""
+    """Verify PostgreSQL-backed checkpoint and pipeline resume logic.
 
-    def test_completed_stages_query(self, db_client, meta, sample_scene):
-        """get_completed_stages returns correct stage names for successful jobs."""
-        from etl.module5_orchestrator import PipelineOrchestrator
-        orch = PipelineOrchestrator(db_client)
+    Catatan arsitektur: kelas ``PipelineOrchestrator`` (dengan
+    ``get_completed_stages`` / ``is_stage_complete``) dibuang di commit fb04dad
+    saat orchestrator ditulis ulang jadi ``run_dataset_job``. Checkpoint per-scene
+    sekarang dibaca lewat ``MetadataManager.get_pipeline_status``, sedangkan titik
+    resume per dataset-job disimpan di tabel ``scene_job_state``. Tes di bawah
+    menguji perilaku yang sama terhadap dua mekanisme yang benar-benar dipakai.
+    """
 
-        # Simulate DOWNLOAD success
+    @staticmethod
+    def _completed_stages(meta, scene_id: int) -> list[str]:
+        """Stage yang SUCCESS untuk sebuah scene — pengganti get_completed_stages."""
+        return [
+            row["stage_name"]
+            for row in meta.get_pipeline_status(scene_id)
+            if row["status"] == "SUCCESS"
+        ]
+
+    def test_completed_stages_query(self, meta, sample_scene):
+        """Stage yang sukses muncul di pipeline status, yang belum jalan tidak."""
         job_id = meta.insert_processing_job(sample_scene, "DOWNLOAD")
         meta.start_job(job_id)
         meta.complete_job(job_id)
 
-        completed = orch.get_completed_stages(sample_scene)
+        completed = self._completed_stages(meta, sample_scene)
         assert "DOWNLOAD" in completed
         assert "CROP"     not in completed
 
-    def test_is_stage_complete_true(self, db_client, meta, sample_scene):
-        """is_stage_complete returns True for a stage that succeeded."""
-        from etl.module5_orchestrator import PipelineOrchestrator
-        orch   = PipelineOrchestrator(db_client)
+    def test_is_stage_complete_true(self, meta, sample_scene):
+        """Stage yang sudah sukses terdeteksi selesai; yang belum, tidak."""
         job_id = meta.insert_processing_job(sample_scene, "CROP")
         meta.start_job(job_id)
         meta.complete_job(job_id)
 
-        assert orch.is_stage_complete(sample_scene, "CROP") is True
-        assert orch.is_stage_complete(sample_scene, "LEE_FILTER") is False
+        completed = self._completed_stages(meta, sample_scene)
+        assert "CROP" in completed
+        assert "LEE_FILTER" not in completed
 
-    def test_failed_job_not_in_completed(self, db_client, meta, sample_scene):
-        """A FAILED job must NOT appear in completed stages."""
-        from etl.module5_orchestrator import PipelineOrchestrator
+    def test_failed_job_not_in_completed(self, meta, sample_scene):
+        """Job FAILED tidak boleh dihitung sebagai stage yang selesai."""
         from etl.database_client import JobStatusEnum
-        orch   = PipelineOrchestrator(db_client)
+
         job_id = meta.insert_processing_job(sample_scene, "LEE_FILTER")
         meta.start_job(job_id)
         meta.complete_job(job_id, status=JobStatusEnum.FAILED,
                           error_code="TIMEOUT", error_message="Lee filter timed out")
 
-        completed = orch.get_completed_stages(sample_scene)
+        completed = self._completed_stages(meta, sample_scene)
         assert "LEE_FILTER" not in completed
+        # Job-nya tetap tercatat, hanya statusnya bukan SUCCESS.
+        statuses = {r["stage_name"]: r["status"] for r in meta.get_pipeline_status(sample_scene)}
+        assert statuses["LEE_FILTER"] == "FAILED"
+
+    def test_scene_job_state_checkpoint_roundtrip(self, db_client, sample_dataset):
+        """Titik resume per dataset-job tersimpan dan terbaca kembali."""
+        from etl.database_client import DatasetJob
+        from etl.dataset_manager import DatasetManager
+
+        with db_client.session() as sess:
+            job = DatasetJob(dataset_id=sample_dataset, job_type="CREATE", status="QUEUED")
+            sess.add(job)
+            sess.flush()
+            job_id = job.job_id
+
+        dsmgr = DatasetManager(db_client)
+        pid = "TEST_SCENE_CHECKPOINT"
+        dsmgr.upsert_scene_job_state(job_id, pid, current_stage="CROP", stage_status="COMPLETED")
+        state = dsmgr.get_scene_job_state(job_id, pid)
+        assert state is not None
+        assert state["current_stage"] == "CROP"
+        assert state["stage_status"] == "COMPLETED"
+
+        # Upsert kedua harus memperbarui baris yang sama, bukan menambah baris baru.
+        dsmgr.upsert_scene_job_state(job_id, pid, current_stage="FUSION", stage_status="RUNNING")
+        state = dsmgr.get_scene_job_state(job_id, pid)
+        assert state["current_stage"] == "FUSION"
+        assert state["stage_status"] == "RUNNING"

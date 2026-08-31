@@ -1,6 +1,6 @@
 
 INSERT INTO regions_of_interest
-    (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active)
+    (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active, source)
 VALUES (
     'JABODTK',
     'Jabodetabek',
@@ -9,11 +9,12 @@ VALUES (
     6392.0,
     2,
     'ID',
-    TRUE
+    TRUE,
+    'SEEDER'
 ) ON CONFLICT (region_code) DO NOTHING;
 
 INSERT INTO regions_of_interest
-    (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active)
+    (region_code, name, description, bbox, area_km2, admin_level, country_code, is_active, source)
 VALUES (
     'JKT',
     'DKI Jakarta',
@@ -22,7 +23,8 @@ VALUES (
     661.5,
     3,
     'ID',
-    TRUE
+    TRUE,
+    'SEEDER'
 ) ON CONFLICT (region_code) DO NOTHING;
 
 -- ---------------------------------------------------------------------------

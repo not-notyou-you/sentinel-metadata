@@ -1,7 +1,7 @@
 # Sentinel-Sentinel: Comprehensive Documentation
 
 > **Satellite-driven flood monitoring data pipeline for Jabodetabek (Jakarta–Bogor–Depok–Tangerang–Bekasi), Indonesia.**
-> This document describes the system **as implemented in the current codebase** (git branch `main`, as of 2026-08-29). Note: `README.md` and `DOCS/README.md` in this repository describe an **older architecture** (a `module4_cog_export.py` COG-export stage producing per-band GOLD GeoTIFFs, and a flat `processed/{tier}/` storage layout). That architecture has been replaced. The current pipeline ends in a **FUSION** stage that produces a single HDF5 multi-modal stack as the GOLD deliverable, and storage is organized per-dataset, per-acquisition-date. This document reflects the current, accurate state of the code — treat the two README files and `STORAGE_STRUCTURE.md`'s historical sections as outdated where they conflict with what's written here.
+> This document describes the system **as implemented in the current codebase** (git branch `main`). Note: `README.md` and `DOCS/README.md` in this repository describe an **older architecture** (a `module4_cog_export.py` COG-export stage and a flat `processed/{tier}/` storage layout). That architecture has been replaced. The current pipeline runs RAW -> BRONZE -> SILVER -> GOLD -> FUSION: GOLD holds analysis-ready Cloud-Optimized GeoTIFFs per band per sensor, and a final FUSION stage produces a single HDF5 multi-modal stack. Storage is organized per-dataset, then per tier, then per source. This document and `STORAGE_STRUCTURE.md` reflect the current state of the code — treat the two README files as outdated where they conflict.
 
 ---
 
@@ -215,7 +215,7 @@ The schema is defined in `database/schema.sql` (11 base tables) and extended by 
 | `satellite_scenes` | Sentinel-1 scene metadata — a **TimescaleDB hypertable** partitioned by `acquisition_datetime` (1-month chunks) |
 | `nasa_scenes` | MODIS/GPM scene/tile metadata (added in migration 003) |
 | `processing_jobs` | Per-scene, per-stage execution records (status, duration, CPU/memory usage, retry attempt number) |
-| `data_products` | Registry of every output file (RAW/BRONZE/SILVER/GOLD tier, file path, checksum, format) |
+| `data_products` | Registry of every output file (RAW/BRONZE/SILVER/GOLD/FUSION tier, `source` sensor, file path, checksum, format) |
 | `quality_metrics` | Per-band quality scores (nodata %, backscatter statistics, speckle index, PASS/FAIL/WARNING flag) |
 | `data_lineage` | Parent→child provenance graph between `data_products`, with transformation type and checksums |
 | `processing_rules` | Configurable quality thresholds per stage |
@@ -232,41 +232,94 @@ Three tables use TimescaleDB hypertables for efficient time-range queries: `sate
 
 ### 3.4 Data Tiers & On-Disk Layout
 
-The authoritative on-disk layout (confirmed against the live `data/datasets/` directory and `STORAGE_STRUCTURE.md`) is tier-first, one subfolder per scene, under a dataset folder named `{dataset_id}_{slug(dataset name)}`:
+The authoritative on-disk layout (see `STORAGE_STRUCTURE.md`) is
+tier-first, then **source**, then one subfolder per scene, under a dataset folder
+named `{dataset_id}_{slug(dataset name)}`:
 
 ```
 data/datasets/{dataset_id}_{slug}/          ← e.g. 7_hakim_d1
 ├── metadata.json                          ← dataset-level summary, written by folder_manager
 ├── raw/
-│   ├── {product_identifier}.SAFE/         ← one folder per Sentinel-1 scene
-│   │   ├── ..._....SAFE.zip               ← original Sentinel-1 archive (kept — required by calibration)
+│   ├── sentinel1/{product_identifier}.SAFE/
+│   │   ├── ..._....SAFE.zip               ← original archive (kept — required by calibration)
 │   │   └── ..._VV.tif, ..._VH.tif         ← bands extracted from the SAFE zip
-│   ├── _aux_modis/                        ← raw MODIS granule cache (not a scene)
-│   └── _aux_gpm/                          ← raw GPM granule cache (not a scene)
+│   ├── modis/                             ← raw MODIS granule cache (flat, spans dates)
+│   └── gpm/                               ← raw GPM granule cache (flat, spans dates)
 ├── bronze/
-│   └── {product_identifier}.SAFE/
+│   └── sentinel1/{product_identifier}.SAFE/
 │       └── ..._VV_crop.tif, ..._VH_crop.tif   ← calibrated + cropped to the dataset's bbox
 ├── silver/
-│   ├── {product_identifier}.SAFE/         ← Sentinel-1 scene
+│   ├── sentinel1/{product_identifier}.SAFE/
 │   │   ├── ..._VV_lee.tif, ..._VH_lee.tif     ← speckle-filtered (Lee filter)
 │   │   └── metadata_qa.json                   ← quality metrics for this scene
-│   └── {YYYYMMDD}/                        ← "aux" scene (not tied to one S1 product)
-│       ├── modis_{date}_flood.tif              ← MODIS auxiliary input (fusion input, not a deliverable)
-│       └── gpm_rain_{24h,72h}_{date}.tif        ← GPM auxiliary inputs (fusion inputs, not deliverables)
-└── gold/
-    └── {YYYYMMDD}/                        ← fusion output dedups per day
-        ├── fusion_{date}.h5                    ← THE final ML-ready product: multi-modal HDF5 stack
-        └── fusion_metadata.json                ← layer names, bbox, shape, contributing source scenes
+│   ├── modis/{YYYYMMDD}/
+│   │   └── modis_{date}_{flood,ndvi,ndwi}.tif
+│   └── gpm/{YYYYMMDD}/
+│       └── gpm_rain_{24h,72h,7d}_{date}.tif
+├── gold/                                   ← analysis-ready COGs, one file per band per source
+│   ├── sentinel1/{product_identifier}.SAFE/
+│   ├── modis/{YYYYMMDD}/
+│   └── gpm/{YYYYMMDD}/
+└── fusion/                                 ← cross-source: has NO source level
+    └── {YYYYMMDD}/
+        ├── fusion_{date}.h5                    ← THE final ML-ready product
+        └── fusion_metadata.json                ← layers, bbox, shape, contributing source scenes
 ```
 
-**Important**: unlike the old architecture described in `README.md`, GOLD tier is **not** a set of per-band Cloud-Optimized GeoTIFFs anymore. `etl/module4_cog_export.py` has been deleted from the codebase. GOLD is now a single HDF5 file per acquisition date, produced by the FUSION stage (`etl/module9_fusion.py`), containing Sentinel-1 VV/VH, MODIS flood extent, and GPM rainfall accumulation — all reprojected onto the same pixel grid.
+Every tier except `fusion` carries a `{source}` level. The fusion tier is
+*the combination* of all three sources, so giving it one source folder would
+misrepresent it — `folder_manager` rejects a source argument there rather than
+silently writing to the wrong place.
+
+Scene keys differ per source: Sentinel-1 uses the scene's `product_identifier`
+(unique down to the second), while MODIS/GPM and the fusion output use the
+acquisition date `YYYYMMDD`. This matters — two Sentinel-1 slices from the same
+orbit pass can land on the same UTC day over the same AOI, so a date alone is
+not a unique key for S1.
+
+`raw/modis/` and `raw/gpm/` are deliberately flat rather than per-date: one
+daily GPM granule is reused by the 72h/7d accumulation windows of subsequent
+dates, so it cannot belong to a single date folder. `bronze/` only has
+`sentinel1/` — MODIS/GPM have no separate crop stage; they go straight from raw
+granules to daily products in `silver/`.
+
+**Tier meanings changed in migration 013.** GOLD used to mean "the fusion HDF5
+stack" (migration 010, when `module4_cog_export.py` was deleted). It now means
+per-source analysis-ready COGs, and the fusion stack moved to its own FUSION
+tier. `data_products.product_tier` gained a `FUSION` value and the table gained
+a `source` column (`SENTINEL1` | `MODIS` | `GPM` | `FUSION`) so a query can
+filter by tier *and* sensor via one index.
 
 **Why these tiers?**
 - **RAW**: kept for reproducibility, and is actually *required* to exist for calibration to run (the SAFE zip contains the calibration LUT).
-- **BRONZE**: crop-validation checkpoint.
-- **SILVER**: inspect filter quality; also holds the MODIS/GPM auxiliary inputs used only internally by the FUSION stage.
-- **GOLD**: the production, ML-ready deliverable.
+- **BRONZE**: crop-validation checkpoint (Sentinel-1 only).
+- **SILVER**: inspect filter quality; also holds the daily MODIS and GPM products.
+- **GOLD**: per-source, per-band Cloud-Optimized GeoTIFFs — internally tiled with overviews, so a consumer can read a window over HTTP range requests without pulling the whole raster. This is the tier to point a DL engineer at for single-sensor experiments.
+- **FUSION**: the multi-modal HDF5 stack — the production, ML-ready deliverable.
 - Tiers you don't request via `required_tiers` when creating a dataset are automatically deleted after being produced (one file at a time, not a bulk directory wipe), and the corresponding `data_products` rows are marked `is_valid=False` rather than deleted — so the audit trail is preserved even after files are cleaned up.
+
+**Fusion HDF5 contents** — datasets are grouped by source, not flat:
+
+```
+/sentinel1/VV, /sentinel1/VH
+/modis/FLOOD, /modis/NDVI, /modis/NDWI
+/gpm/rainfall_24h, /gpm/rainfall_72h, /gpm/rainfall_7d
+```
+
+All layers are reprojected onto that scene's Sentinel-1 grid. `/modis/FLOOD` is
+uint8 with 255 = nodata (flood class is categorical; NaN doesn't fit in uint8);
+the rest are float32 with NaN as nodata. A layer whose input was unavailable is
+still written, filled entirely with nodata — the file shape is therefore
+constant and consumers never have to test for a dataset's existence.
+
+MODIS NDVI/NDWI are computed from MOD09GA surface reflectance:
+`NDVI = (b02_NIR − b01_red) / (b02 + b01)` and
+`NDWI = (b04_green − b02_NIR) / (b04 + b02)` — the McFeeters open-water
+formulation, not Gao's vegetation-moisture NDWI, because this is a flood
+pipeline. The index is computed on the native sinusoidal grid and only then
+reprojected; resampling each band first and dividing afterwards would mix
+neighbouring reflectances differently in numerator and denominator, shifting
+index values along every feature edge.
 
 ### 3.5 Per-Scene Data Flow
 
@@ -275,7 +328,7 @@ SCENE ARRIVES
     ↓
 [1] DOWNLOAD     — discover + download Sentinel-1 SAFE zip from CDSE, extract VV/VH bands (RAW)
     ↓
-[2] CALIBRATE    — apply sigma-nought radiometric calibration LUT, reproject via GCPs (into BRONZE)
+[2] CALIBRATE    — apply sigma-nought radiometric calibration LUT, reproject via GCPs (scratch _work/)
     ↓
 [3] CROP         — clip calibrated bands to the dataset's bbox (BRONZE)
     ↓
@@ -283,9 +336,12 @@ SCENE ARRIVES
     ↓
 [5] QUALITY_ANALYTICS — compute nodata%, backscatter stats, speckle index, composite quality score (writes metadata_qa.json)
     ↓
-[6] Auxiliary ingestion — fetch/align MODIS flood extent + GPM rainfall for the same date (SILVER, internal inputs only)
+[6] GOLD_EXPORT  — rewrite the Sentinel-1 SILVER bands as analysis-ready COGs (GOLD)
     ↓
-[7] FUSION       — reproject all layers onto the S1 grid, write fusion_{date}.h5 (GOLD)
+[7] Auxiliary ingestion — fetch MODIS flood/NDVI/NDWI + GPM rainfall for the same
+                          date into SILVER, then export those to GOLD too
+    ↓
+[8] FUSION       — reproject every GOLD layer onto the S1 grid, write fusion_{date}.h5 (FUSION)
     ↓
 TIER CLEANUP     — delete any tier not in the dataset's requested tiers
 ```
@@ -817,7 +873,7 @@ A: No — Sentinel-1, MODIS, and GPM downloads are all live, authenticated calls
 A: The pipeline is near-real-time at best (Sentinel-1 revisit ~6 days, MODIS 1–2 days, GPM IMERG Final Run has its own processing delay). It is not designed for minute-scale real-time alerting.
 
 **Q: Why did GOLD tier change from per-band GeoTIFFs to a single HDF5 file?**
-A: The pipeline was refactored to add a FUSION stage that combines Sentinel-1, MODIS, and GPM into one aligned multi-modal stack, replacing the older per-band Cloud-Optimized GeoTIFF export (`module4_cog_export.py`, which has since been deleted from the codebase). This makes the GOLD tier directly consumable as a single multi-channel array for ML training rather than requiring the consumer to manually align separate files.
+A: The pipeline was refactored twice. First a FUSION stage was added that combines Sentinel-1, MODIS, and GPM into one aligned multi-modal stack, replacing the older per-band Cloud-Optimized GeoTIFF export (`module4_cog_export.py`, deleted at that point) — GOLD then meant the HDF5 stack. Later that proved to conflate two different things, so the tiers were split: GOLD went back to meaning per-band, per-sensor analysis-ready COGs (now written by `module4_gold_export.py`), and the fusion stack moved to its own FUSION tier. A DL engineer wanting one sensor reads GOLD; one wanting the aligned multi-channel array reads FUSION — without either having to filter the other out.
 
 **Q: Can I extend this to another region outside Jabodetabek?**
 A: Yes — add a new bbox to `regions_of_interest` (via the location resolver's geocoding, or a new migration/config entry) and create a dataset against it; the pipeline itself is region-agnostic.

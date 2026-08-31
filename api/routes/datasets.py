@@ -18,22 +18,24 @@ from api.schemas import (
     DatasetLogsResponse,
     DatasetPauseRequest,
     DatasetPauseResponse,
+    DatasetFileItem,
     DatasetProgressResponse,
     DatasetResumeResponse,
+    DatasetSceneFiles,
+    DatasetStorageSummary,
+    DatasetTierFilesResponse,
     DeletionProgressResponse,
+    SourceStorageItem,
+    TierStorageItem,
 )
 from etl import folder_manager as fm
+from api.deps import get_db
 from etl.database_client import DatabaseClient
 from etl.dataset_manager import DatasetManager
 from etl.pipeline_logger import PipelineLogManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
 
 
 def _mgr(db: DatabaseClient) -> DatasetManager:
@@ -47,10 +49,11 @@ def _slugify(name: str) -> str:
 @router.post("", response_model=DatasetCreateResponse, summary="Buat dataset baru")
 async def create_dataset(
     req: DatasetCreateRequest,
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> DatasetCreateResponse:
     try:
         result = _mgr(db).create_dataset(
+            region_id=req.region_id,
             location=req.location,
             date_start=req.date_start,
             date_end=req.date_end,
@@ -66,7 +69,7 @@ async def create_dataset(
 
 @router.get("", response_model=DatasetListResponse, summary="List dataset")
 async def list_datasets(
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> DatasetListResponse:
@@ -75,7 +78,7 @@ async def list_datasets(
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetail, summary="Detail dataset")
-async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetDetail:
+async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DatasetDetail:
     result = _mgr(db).get_dataset(dataset_id)
     if result is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
@@ -83,7 +86,7 @@ async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) ->
 
 
 @router.get("/{dataset_id}/status", response_model=DatasetProgressResponse, summary="Progres pipeline dataset")
-async def get_dataset_status(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetProgressResponse:
+async def get_dataset_status(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DatasetProgressResponse:
     result = _mgr(db).get_progress(dataset_id)
     if result is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
@@ -94,7 +97,7 @@ async def get_dataset_status(dataset_id: int, db: DatabaseClient = Depends(_get_
 async def pause_dataset(
     dataset_id: int,
     req: DatasetPauseRequest = DatasetPauseRequest(),
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> DatasetPauseResponse:
     try:
         result = _mgr(db).pause_dataset(dataset_id, reason=req.reason)
@@ -104,7 +107,7 @@ async def pause_dataset(
 
 
 @router.post("/{dataset_id}/resume", response_model=DatasetResumeResponse, summary="Resume dataset")
-async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DatasetResumeResponse:
+async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DatasetResumeResponse:
     try:
         result = _mgr(db).resume_dataset(dataset_id)
     except ValueError as exc:
@@ -116,7 +119,7 @@ async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db))
 async def cancel_dataset(
     dataset_id: int,
     req: DatasetCancelRequest = DatasetCancelRequest(),
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> DatasetCancelResponse:
     try:
         result = _mgr(db).cancel_dataset(dataset_id, cascade_delete=req.cascade_delete)
@@ -133,7 +136,7 @@ async def get_dataset_logs(
     scene_id: str | None = Query(None, description="Filter product_identifier scene"),
     limit: int = Query(50, ge=1, le=1000),
     order: str = Query("desc", pattern="^(asc|desc)$"),
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> DatasetLogsResponse:
     if _mgr(db).get_dataset(dataset_id) is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
@@ -147,7 +150,7 @@ async def get_dataset_logs(
 async def delete_dataset(
     dataset_id: int,
     force: bool = Query(False, description="Paksa hentikan proses yang sedang berjalan lalu hapus"),
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
 ) -> DatasetDeleteResponse:
     try:
         result = _mgr(db).delete_dataset(dataset_id, force=force)
@@ -157,31 +160,86 @@ async def delete_dataset(
 
 
 @router.get("/{dataset_id}/deletion-progress", response_model=DeletionProgressResponse, summary="Progres penghapusan")
-async def get_deletion_progress(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> DeletionProgressResponse:
+async def get_deletion_progress(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DeletionProgressResponse:
     result = _mgr(db).get_deletion_progress(dataset_id)
     if result is None:
         raise HTTPException(404, "Tidak ada proses penghapusan untuk dataset ini")
     return DeletionProgressResponse(**result)
 
 
+def _mb(size_bytes: int) -> float:
+    return round(size_bytes / (1024 ** 2), 3)
+
+
+def _resolve_tier_source(tier: str, source: str | None) -> tuple[str, str | None]:
+    """Validasi pasangan tier/source dari query string jadi bentuk yang
+    dipakai folder_manager. Melempar HTTPException 400 alih-alih membiarkan
+    ValueError folder_manager keluar sebagai 500."""
+    try:
+        tier_l = fm.normalize_tier(tier)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if source is None:
+        return tier_l, None
+    try:
+        source_l = fm.normalize_source(source)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    allowed = fm.sources_for_tier(tier_l)
+    if not allowed:
+        raise HTTPException(
+            400,
+            f"Tier {tier_l} tidak punya level source (dia gabungan semua "
+            f"source) - hilangkan parameter source",
+        )
+    if source_l not in allowed:
+        raise HTTPException(
+            400, f"Source {source_l} tidak dipakai di tier {tier_l}. Valid: {list(allowed)}"
+        )
+    return tier_l, source_l
+
+
 @router.get("/{dataset_id}/download", summary="Unduh dataset (ZIP)")
-async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> FileResponse:
+async def download_dataset(
+    dataset_id: int,
+    tier: str | None = Query(None, description="Batasi ke satu tier, mis. gold"),
+    source: str | None = Query(None, description="Batasi ke satu source, mis. modis"),
+    db: DatabaseClient = Depends(get_db),
+) -> FileResponse:
+    """ZIP isi dataset. Tanpa filter: seluruh dataset. Dengan `tier` dan/atau
+    `source`: cuma bagian itu - supaya bisa mengunduh mis. hanya GOLD MODIS
+    tanpa ikut menarik puluhan GB tier RAW."""
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
+    if source is not None and tier is None:
+        raise HTTPException(400, "Parameter source hanya bisa dipakai bersama tier")
+
     base_dir = fm.get_dataset_root(dataset_id, info["name"])
-    files = [f for f in base_dir.rglob("*") if f.is_file()] if base_dir.exists() else []
+    if tier is None:
+        root = base_dir
+    else:
+        tier_l, source_l = _resolve_tier_source(tier, source)
+        root = (
+            fm.get_source_dir(dataset_id, info["name"], tier_l, source_l)
+            if source_l else fm.get_tier_dir(dataset_id, info["name"], tier_l)
+        )
+
+    files = [f for f in root.rglob("*") if f.is_file()] if root.exists() else []
     if not files:
-        raise HTTPException(404, "Dataset belum memiliki file untuk diunduh")
+        raise HTTPException(404, "Tidak ada file untuk diunduh dengan filter ini")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     tmp.close()
     with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
+            # arcname tetap relatif ke root dataset walau di-filter, supaya ZIP
+            # parsial dan ZIP penuh punya struktur folder yang sama.
             zf.write(f, arcname=str(f.relative_to(base_dir)))
 
-    filename = f"{_slugify(info['name'])}.zip"
+    suffix = "".join(f"_{part}" for part in (tier, source) if part)
+    filename = f"{_slugify(info['name'])}{suffix}.zip"
     return FileResponse(
         tmp.name,
         filename=filename,
@@ -190,54 +248,117 @@ async def download_dataset(dataset_id: int, db: DatabaseClient = Depends(_get_db
     )
 
 
-@router.get("/{dataset_id}/storage/summary", summary="Ringkasan storage per tier untuk dataset ini")
-async def get_dataset_storage_summary(dataset_id: int, db: DatabaseClient = Depends(_get_db)) -> dict:
+@router.get("/{dataset_id}/metadata", summary="metadata.json level-dataset")
+async def get_dataset_metadata(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
+    """Isi data/datasets/{id}_{slug}/metadata.json apa adanya.
+
+    Ini ringkasan yang ditulis orchestrator tiap job selesai, bukan sumber
+    kebenaran - kalau berbeda dari endpoint lain, database yang benar. Berguna
+    untuk melihat kondisi dataset persis seperti yang terekam di disk."""
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
-    tiers: dict[str, dict] = {}
-    for tier in fm.TIERS:
-        files = fm.get_tier_files(dataset_id, info["name"], tier)
-        size_bytes = sum(f.stat().st_size for f in files)
-        tiers[tier] = {
-            "file_count": len(files),
-            "size_bytes": size_bytes,
-            "size_mb": round(size_bytes / (1024 ** 2), 3),
-            "scene_count": len(fm.list_scenes(dataset_id, info["name"], tier)),
-        }
-
-    total_bytes = sum(t["size_bytes"] for t in tiers.values())
-    return {
-        "dataset_id": dataset_id,
-        "tiers": tiers,
-        "total_size_bytes": total_bytes,
-        "total_size_mb": round(total_bytes / (1024 ** 2), 3),
-    }
+    metadata = fm.read_dataset_metadata(dataset_id, info["name"])
+    if metadata is None:
+        raise HTTPException(
+            404,
+            "metadata.json belum ada untuk dataset ini - file ini baru ditulis "
+            "saat job pertama selesai (COMPLETED/CANCELLED/PAUSED).",
+        )
+    return metadata
 
 
-@router.get("/{dataset_id}/storage/files/{tier}", summary="List file dataset ini per tier")
+@router.get(
+    "/{dataset_id}/storage/summary",
+    response_model=DatasetStorageSummary,
+    summary="Ringkasan storage per tier dan per source untuk dataset ini",
+)
+async def get_dataset_storage_summary(
+    dataset_id: int, db: DatabaseClient = Depends(get_db)
+) -> DatasetStorageSummary:
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    breakdown = fm.storage_breakdown(dataset_id, info["name"])
+    return DatasetStorageSummary(
+        dataset_id=dataset_id,
+        tiers={
+            tier: TierStorageItem(
+                size_bytes=t["size_bytes"],
+                size_mb=_mb(t["size_bytes"]),
+                file_count=t["file_count"],
+                scene_count=t["scene_count"],
+                sources={
+                    src: SourceStorageItem(
+                        size_bytes=v["size_bytes"],
+                        size_mb=_mb(v["size_bytes"]),
+                        file_count=v["file_count"],
+                        scene_count=v["scene_count"],
+                    )
+                    for src, v in t["sources"].items()
+                },
+            )
+            for tier, t in breakdown["tiers"].items()
+        },
+        sources={
+            src: SourceStorageItem(
+                size_bytes=v["size_bytes"],
+                size_mb=_mb(v["size_bytes"]),
+                file_count=v["file_count"],
+            )
+            for src, v in breakdown["sources"].items()
+        },
+        total_size_bytes=breakdown["total_size_bytes"],
+        total_size_mb=_mb(breakdown["total_size_bytes"]),
+    )
+
+
+@router.get(
+    "/{dataset_id}/storage/files/{tier}",
+    response_model=DatasetTierFilesResponse,
+    summary="List file dataset ini per tier, dikelompokkan per source dan scene",
+)
 async def list_dataset_tier_files(
     dataset_id: int,
     tier: str,
-    scene: str | None = Query(None, description="Filter nama scene, kosongkan untuk semua scene"),
-    db: DatabaseClient = Depends(_get_db),
-) -> dict:
+    source: str | None = Query(None, description="Filter satu source: sentinel1 | modis | gpm"),
+    scene: str | None = Query(None, description="Filter satu scene (product_identifier atau YYYYMMDD)"),
+    db: DatabaseClient = Depends(get_db),
+) -> DatasetTierFilesResponse:
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
-    if tier.lower() not in fm.TIERS:
-        raise HTTPException(400, f"Tier tidak valid: {tier}. Valid: {fm.TIERS}")
 
-    scenes = [scene] if scene else fm.list_scenes(dataset_id, info["name"], tier)
-    result = []
-    for s in scenes:
-        files = fm.get_scene_files(dataset_id, info["name"], tier, s)
-        result.append({
-            "scene": s,
-            "files": [
-                {"name": f.name, "path": str(f), "size_mb": round(f.stat().st_size / (1024 ** 2), 3)}
+    tier_l, source_l = _resolve_tier_source(tier, source)
+    name = info["name"]
+    result: list[DatasetSceneFiles] = []
+
+    def _entry(scene_key: str, src: str | None, files: list) -> DatasetSceneFiles:
+        return DatasetSceneFiles(
+            scene=scene_key,
+            source=src,
+            files=[
+                DatasetFileItem(name=f.name, path=str(f), size_mb=_mb(f.stat().st_size))
                 for f in files
             ],
-        })
-    return {"dataset_id": dataset_id, "tier": tier.lower(), "scenes": result}
+        )
+
+    if not fm.sources_for_tier(tier_l):
+        # Tier fusion: langsung scene, tanpa level source.
+        scenes = [scene] if scene else fm.list_fusion_scenes(dataset_id, name)
+        for sc in scenes:
+            result.append(_entry(sc, None, fm.get_fusion_scene_files(dataset_id, name, sc)))
+    else:
+        sources = [source_l] if source_l else fm.list_sources(dataset_id, name, tier_l)
+        for src in sources:
+            scenes = [scene] if scene else fm.list_scenes(dataset_id, name, tier_l, src)
+            for sc in scenes:
+                result.append(
+                    _entry(sc, src, fm.get_scene_files(dataset_id, name, tier_l, src, sc))
+                )
+
+    return DatasetTierFilesResponse(
+        dataset_id=dataset_id, tier=tier_l, source=source_l, scenes=result
+    )

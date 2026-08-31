@@ -13,6 +13,7 @@ from api.schemas import (
     LiveToggleRequest,
     LiveToggleResponse,
 )
+from api.deps import get_db
 from etl.database_client import DatabaseClient, DataProduct, LiveDatasetSource
 from etl.dataset_manager import DatasetManager
 
@@ -20,17 +21,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _get_db() -> DatabaseClient:
-    from api.main import get_db
-    return get_db()
-
-
 def _mgr(db: DatabaseClient) -> DatasetManager:
     return DatasetManager(db)
 
 
 @router.get("", response_model=LiveStatusResponse, summary="Status dataset live")
-async def get_live_status(db: DatabaseClient = Depends(_get_db)) -> LiveStatusResponse:
+async def get_live_status(db: DatabaseClient = Depends(get_db)) -> LiveStatusResponse:
     live = _mgr(db).get_live_dataset()
     if live is None:
         raise HTTPException(404, "Dataset live belum ada")
@@ -61,7 +57,7 @@ async def get_live_status(db: DatabaseClient = Depends(_get_db)) -> LiveStatusRe
 
 
 @router.post("/toggle", response_model=LiveToggleResponse, summary="Nyalakan/matikan dataset live")
-async def toggle_live(req: LiveToggleRequest, db: DatabaseClient = Depends(_get_db)) -> LiveToggleResponse:
+async def toggle_live(req: LiveToggleRequest, db: DatabaseClient = Depends(get_db)) -> LiveToggleResponse:
     try:
         result = _mgr(db).toggle_live(req.enabled)
     except ValueError as exc:
@@ -70,7 +66,7 @@ async def toggle_live(req: LiveToggleRequest, db: DatabaseClient = Depends(_get_
 
 
 @router.post("/clear", response_model=LiveClearResponse, summary="Kosongkan dataset live")
-async def clear_live(db: DatabaseClient = Depends(_get_db)) -> LiveClearResponse:
+async def clear_live(db: DatabaseClient = Depends(get_db)) -> LiveClearResponse:
     try:
         result = _mgr(db).clear_live_dataset()
     except ValueError as exc:
@@ -83,7 +79,7 @@ async def clear_live(db: DatabaseClient = Depends(_get_db)) -> LiveClearResponse
 
 
 @router.post("/backfill", response_model=LiveBackfillResponse, summary="Backfill dataset live untuk rentang tanggal tertentu")
-async def backfill_live(req: LiveBackfillRequest, db: DatabaseClient = Depends(_get_db)) -> LiveBackfillResponse:
+async def backfill_live(req: LiveBackfillRequest, db: DatabaseClient = Depends(get_db)) -> LiveBackfillResponse:
     try:
         result = _mgr(db).trigger_live_backfill(req.date_start, req.date_end)
     except ValueError as exc:
@@ -97,7 +93,7 @@ async def backfill_live(req: LiveBackfillRequest, db: DatabaseClient = Depends(_
 
 @router.get("/scenes", response_model=list[LiveSceneItem], summary="Scene terbaru di dataset live")
 async def list_live_scenes(
-    db: DatabaseClient = Depends(_get_db),
+    db: DatabaseClient = Depends(get_db),
     limit: int = Query(50, ge=1, le=200),
 ) -> list[LiveSceneItem]:
     live = _mgr(db).get_live_dataset()
