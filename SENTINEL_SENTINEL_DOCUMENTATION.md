@@ -1,4 +1,4 @@
-# Sentinel-Sentinel: Comprehensive Documentation
+# THE TRINITY: Comprehensive Documentation
 
 > **Satellite-driven flood monitoring data pipeline for Jabodetabek (Jakarta–Bogor–Depok–Tangerang–Bekasi), Indonesia.**
 > This document describes the system **as implemented in the current codebase** (git branch `main`). Note: `README.md` and `DOCS/README.md` in this repository describe an **older architecture** (a `module4_cog_export.py` COG-export stage and a flat `processed/{tier}/` storage layout). That architecture has been replaced. The current pipeline runs RAW -> BRONZE -> SILVER -> GOLD -> FUSION: GOLD holds analysis-ready Cloud-Optimized GeoTIFFs per band per sensor, and a final FUSION stage produces a single HDF5 multi-modal stack. Storage is organized per-dataset, then per tier, then per source. This document and `STORAGE_STRUCTURE.md` reflect the current state of the code — treat the two README files as outdated where they conflict.
@@ -8,7 +8,7 @@
 ## Table of Contents
 
 1. [Quickstart](#1-quickstart)
-2. [What Is Sentinel-Sentinel?](#2-what-is-sentinel-sentinel)
+2. [What Is THE TRINITY?](#2-what-is-the-trinity)
 3. [Architecture Overview](#3-architecture-overview)
 4. [Data Sources](#4-data-sources)
 5. [Pipeline Explained](#5-pipeline-explained)
@@ -99,13 +99,13 @@ Go to the "Buat Dataset" (Create Dataset) tab, pick a preset region (e.g. Jabode
 
 ---
 
-## 2. What Is Sentinel-Sentinel?
+## 2. What Is THE TRINITY?
 
 ### 2.1 The Problem
 
 Jakarta and the surrounding Jabodetabek metropolitan area are chronically vulnerable to flooding — from monsoon rainfall, tidal (rob) flooding along the coast, and inadequate urban drainage. Traditional flood monitoring relies on sparse ground gauges and manual reporting, which is slow to update and has poor spatial coverage across a metro area of ~6,400 km². Satellite remote sensing offers continuous, wide-area, and — critically for a tropical monsoon climate with heavy cloud cover — all-weather observation, because radar (SAR) satellites see through clouds where optical satellites cannot.
 
-Sentinel-Sentinel exists to turn raw satellite archives into analysis-ready, machine-learning-ready data, automatically, on a recurring basis, without requiring the end user to understand satellite data formats, radiometric calibration, or geospatial reprojection.
+THE TRINITY exists to turn raw satellite archives into analysis-ready, machine-learning-ready data, automatically, on a recurring basis, without requiring the end user to understand satellite data formats, radiometric calibration, or geospatial reprojection.
 
 ### 2.2 What This App Does (Plain-Language Explanation)
 
@@ -357,7 +357,7 @@ TIER CLEANUP     — delete any tier not in the dataset's requested tiers
 
 ## 4. Data Sources
 
-All three satellite data sources in Sentinel-Sentinel are **live, authenticated, real data feeds** — nothing here is simulated or mocked in the production pipeline (the only synthetic data is `etl/seed_data.py`, a standalone dev/test fixture generator, entirely separate from the live pipeline).
+All three satellite data sources in THE TRINITY are **live, authenticated, real data feeds** — nothing here is simulated or mocked in the production pipeline (the only synthetic data is `etl/seed_data.py`, a standalone dev/test fixture generator, entirely separate from the live pipeline).
 
 ### 4.1 Sentinel-1 SAR (ESA / Copernicus Data Space Ecosystem)
 

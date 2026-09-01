@@ -1,11 +1,11 @@
 # Interface Documentation
-## Sentinel Sentinel Web Dashboard & Control Panel
+## The Trinity Web Dashboard & Control Panel
 
 ---
 
 ## Overview
 
-The Sentinel Sentinel web interface provides three main sections for users to create, manage, and monitor satellite data ingestion pipelines:
+The Trinity web interface provides three main sections for users to create, manage, and monitor satellite data ingestion pipelines:
 
 1. **Buat Dataset** (Create Dataset) — Define new data collection jobs
 2. **Dataset Saya** (My Datasets) — Monitor running or completed jobs
@@ -482,7 +482,7 @@ Formatted with `new Date(iso).toLocaleString('id-ID')`
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ [ICON] Sentinel Sentinel    |  Status  | Time   │
+│ [ICON] The Trinity    |  Status  | Time   │
 │ Konsol Data Banjir          | [●] Online       │
 └─────────────────────────────────────────────────┘
 ```

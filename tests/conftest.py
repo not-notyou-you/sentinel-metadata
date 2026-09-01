@@ -96,6 +96,8 @@ def db_client():
     # doesn't run schema.sql's raw seed INSERTs, so processing_stages (needed
     # by MetadataManager.insert_processing_job's FK lookup) starts empty on a
     # fresh test DB. Seed the same stage rows schema.sql seeds in production.
+    # Keep this list in sync with database/schema.sql — drift here is what let
+    # the missing GOLD_EXPORT lineage mapping reach production untested.
     with client.session() as sess:
         sess.execute(text("""
             INSERT INTO processing_stages (stage_name, stage_code, stage_order, description, timeout_minutes, retry_count, retry_delay_sec, is_mandatory, is_active)
@@ -106,7 +108,8 @@ def db_client():
                 ('COG_EXPORT',        'CE',  4, 'Cloud-Optimized GeoTIFF normalization and export',           30,  2, 30, TRUE, TRUE),
                 ('ORCHESTRATE',       'OR',  5, 'Pipeline orchestration, checkpointing, and retry management', 10,  1, 10, TRUE, TRUE),
                 ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30, TRUE, TRUE),
-                ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM) for GOLD tier', 60, 2, 30, TRUE, TRUE)
+                ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM) for GOLD tier', 60, 2, 30, TRUE, TRUE),
+                ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30, TRUE, TRUE)
             ON CONFLICT (stage_name) DO NOTHING
         """))
     yield client

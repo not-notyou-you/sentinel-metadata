@@ -1,11 +1,11 @@
 # Product Requirements Document (PRD)
-## Sentinel Sentinel — Data Platform for ML/DL Flood Prediction
+## The Trinity — Data Platform for ML/DL Flood Prediction
 
 ---
 
 ## 1. Executive Summary
 
-**Sentinel Sentinel** is a production-grade data pipeline platform designed for **machine learning and deep learning practitioners** building flood prediction and emergency response systems for Jakarta metropolitan area. The platform automates acquisition, processing, and delivery of multi-sensor geospatial data (Sentinel-1 SAR, MODIS, GPM) in ML-ready formats with complete data lineage, quality assurance, and API-first access.
+**The Trinity** is a production-grade data pipeline platform designed for **machine learning and deep learning practitioners** building flood prediction and emergency response systems for Jakarta metropolitan area. The platform automates acquisition, processing, and delivery of multi-sensor geospatial data (Sentinel-1 SAR, MODIS, GPM) in ML-ready formats with complete data lineage, quality assurance, and API-first access.
 
 **Target Users**: Data scientists, ML engineers, geospatial analysts, civil engineers specializing in disaster management.
 
@@ -165,7 +165,7 @@ POST /api/live/backfill
 ### Python SDK (Recommended for ML)
 
 ```python
-from sentinel_sentinel import DatasetClient, QualityFilter
+from the_trinity import DatasetClient, QualityFilter
 
 client = DatasetClient(base_url="https://api.example.com")
 
@@ -413,7 +413,7 @@ POST your_webhook_url
 
 ```python
 import torch
-from sentinel_sentinel import DatasetClient
+from the_trinity import DatasetClient
 
 client = DatasetClient()
 dataset = client.get_dataset(dataset_id)
@@ -450,7 +450,7 @@ loader = torch.utils.data.DataLoader(dataset_torch, batch_size=16)
 
 ```python
 from fastapi import FastAPI
-from sentinel_sentinel import DatasetClient
+from the_trinity import DatasetClient
 import rasterio
 import numpy as np
 
@@ -576,5 +576,5 @@ fastapi>=0.100  # Optional, for API serving
 
 **Document Version**: 1.0  
 **Last Updated**: January 2024  
-**Author**: Julius Marselinus (Sentinel Sentinel Core Team)  
+**Author**: Julius Marselinus (The Trinity Core Team)  
 **Contact**: support@example.com

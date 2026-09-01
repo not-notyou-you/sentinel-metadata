@@ -42,21 +42,29 @@ class LineageTracker:
         - Query full transformation history for any product
 
     The transformation DAG maps pipeline stages to lineage links:
-        RAW (download) ──CROP───────► BRONZE
-        BRONZE         ──LEE────────► SILVER
-        SILVER         ──FUSION─────► GOLD (fused HDF5 stack)
+        RAW (download) ──CROP────────► BRONZE
+        BRONZE         ──LEE_FILTER──► SILVER
+        SILVER         ──GOLD_EXPORT─► GOLD  (per-source analysis-ready COG)
+        GOLD           ──FUSION──────► FUSION (multi-modal HDF5 stack)
 
     Args:
         db: Initialized DatabaseClient instance
     """
 
-    # Maps transformation_type → expected stage_name
+    # Maps transformation_type → expected stage_name.
+    # GOLD_EXPORT was added to processing_stages by migration 013 (SILVER →
+    # GOLD per-source COG, for Sentinel-1 as well as MODIS/GPM) but never
+    # registered here, so every record_transformation() call from
+    # module5_orchestrator / module9_fusion raised "Unknown
+    # transformation_type" and failed the whole GOLD stage. COG_EXPORT stays:
+    # it is still referenced by pre-013 historical lineage rows.
     _TRANSFORM_STAGE_MAP: dict[str, str] = {
-        "CROP":       "CROP",
-        "LEE_FILTER": "LEE_FILTER",
-        "COG_EXPORT": "COG_EXPORT",
-        "FUSION":     "FUSION",
-        "ANALYTICS":  "QUALITY_ANALYTICS",
+        "CROP":        "CROP",
+        "LEE_FILTER":  "LEE_FILTER",
+        "COG_EXPORT":  "COG_EXPORT",
+        "GOLD_EXPORT": "GOLD_EXPORT",
+        "FUSION":      "FUSION",
+        "ANALYTICS":   "QUALITY_ANALYTICS",
     }
 
     def __init__(self, db: DatabaseClient) -> None:
@@ -129,7 +137,8 @@ class LineageTracker:
         Args:
             parent_product_id   : Source product (input to transformation)
             child_product_id    : Result product (output of transformation)
-            transformation_type : 'CROP' | 'LEE_FILTER' | 'COG_EXPORT' | 'ANALYTICS'
+            transformation_type : 'CROP' | 'LEE_FILTER' | 'GOLD_EXPORT' |
+                                  'FUSION' | 'ANALYTICS' | 'COG_EXPORT' (legacy)
             job_id              : ProcessingJob that performed the transformation
             params              : Transformation parameters dict (bbox, window_size, etc.)
 
@@ -298,7 +307,7 @@ class LineageTracker:
                 select(DataLineage).where(DataLineage.child_product_id == product_id)
             ).all()
             for lin in lineages:
-                chain.insert(0, self._lineage_to_dict(lin))
+                chain.insert(0, self._lineage_to_dict(lin, sess))
                 self._trace_recursive(sess, lin.parent_product_id, direction, chain, visited)
         else:
             # Find lineage records where this product is the PARENT
@@ -306,12 +315,18 @@ class LineageTracker:
                 select(DataLineage).where(DataLineage.parent_product_id == product_id)
             ).all()
             for lin in lineages:
-                chain.append(self._lineage_to_dict(lin))
+                chain.append(self._lineage_to_dict(lin, sess))
                 self._trace_recursive(sess, lin.child_product_id, direction, chain, visited)
 
-    def _lineage_to_dict(self, lin: DataLineage) -> dict:
-        """Serialize a DataLineage ORM object to dict."""
-        return {
+    def _lineage_to_dict(self, lin: DataLineage, sess=None) -> dict:
+        """Serialize a DataLineage ORM object to dict.
+
+        `source`/`product_tier` tiap ujung langkah ikut dibawa: sejak layout
+        tier-source, satu dataset punya rantai paralel per sensor (S1
+        RAW->BRONZE->SILVER->GOLD, MODIS/GPM SILVER->GOLD), dan tanpa kolom
+        ini pembaca rantai tidak bisa tahu langkah mana milik sensor mana
+        tanpa menarik tiap product satu per satu."""
+        out = {
             "lineage_id":             lin.lineage_id,
             "parent_product_id":      lin.parent_product_id,
             "child_product_id":       lin.child_product_id,
@@ -322,7 +337,21 @@ class LineageTracker:
             "input_checksum":         lin.input_checksum,
             "output_checksum":        lin.output_checksum,
             "created_at":             lin.created_at.isoformat(),
+            "source":                 None,
+            "parent_tier":            None,
+            "child_tier":             None,
         }
+        if sess is not None:
+            parent = sess.get(DataProduct, lin.parent_product_id)
+            child = sess.get(DataProduct, lin.child_product_id)
+            if child is not None:
+                out["source"] = child.source
+                out["child_tier"] = child.product_tier.value
+            if parent is not None:
+                out["parent_tier"] = parent.product_tier.value
+                if out["source"] is None:
+                    out["source"] = parent.source
+        return out
 
     def verify_integrity(self, product_id: int, file_path: str) -> dict:
         """

@@ -1,4 +1,15 @@
-# Sentinel-1 Flood Detection Data Pipeline
+# THE TRINITY
+
+> **"Sentinel Watches, MODIS Sees, GPM Measures"**
+>
+> THE TRINITY fuses three independent satellite data sources into one flood
+> risk and early-warning pipeline: **Sentinel-1 SAR** watches the ground
+> continuously regardless of cloud cover or time of day, **MODIS** optical
+> imagery sees visual surface detail, and **GPM** rainfall data measures
+> precipitation. Combined, they give a fuller picture of flood risk than any
+> single sensor could alone.
+
+## Sentinel-1 Flood Detection Data Pipeline
 
 > **Skripsi:** Perancangan dan Implementasi Data Lake Terstruktur dengan ETL Pipeline untuk Dataset Sentinel-1 Siap Produksi dalam Aplikasi Deteksi Banjir
 

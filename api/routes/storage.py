@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from etl.config import cfg as pipeline_cfg
+from etl import folder_manager as fm
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,23 +32,35 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-StorageTier = Literal["raw", "bronze", "silver", "gold", "partial", "all"]
+StorageTier = Literal["raw", "bronze", "silver", "gold", "fusion", "partial", "all"]
 
-TIER_PATHS: dict[str, list[Path]] = {}
+# Tier yang dianggap turunan dan aman dihapus massal lewat tier="all".
+# gold + fusion adalah deliverable akhir, jadi tidak ikut.
+_DERIVED_TIERS: tuple[str, ...] = ("raw", "bronze", "silver")
+
+
+def _dataset_roots() -> list[Path]:
+    """Semua folder dataset di data/datasets/. Endpoint di router ini
+    lintas-dataset (ringkasan disk mesin), sementara
+    /api/datasets/{id}/storage/summary adalah versi satu dataset."""
+    if not fm.DATA_ROOT.exists():
+        return []
+    return sorted(d for d in fm.DATA_ROOT.iterdir() if d.is_dir())
 
 
 def _get_tier_paths() -> dict[str, list[Path]]:
-    """Resolve folder paths dari config saat dipanggil (bukan saat import)."""
-    out = Path(pipeline_cfg.pipeline.output_dir)
-    raw = Path(pipeline_cfg.pipeline.recovered_dir)
-    return {
-        "raw":     [raw],
-        "bronze":  [out / "bronze"],
-        "silver":  [out / "silver"],
-        "gold":    [out / "gold"],
-        "partial": [raw, out / "bronze", out / "silver", out / "gold"],
-        "all":     [raw, out / "bronze", out / "silver", out / "gold"],
-    }
+    """Folder per tier di layout tier-source-scene sekarang, dikumpulkan dari
+    seluruh dataset: data/datasets/{id}_{slug}/{tier}/.
+
+    Sebelumnya fungsi ini menunjuk `processed/{bronze,silver,gold}` dan
+    `recovered_temp/` -- layout sebelum refactor tier/source, yang sudah
+    tidak pernah ditulis lagi. Akibatnya seluruh router ini melaporkan 0 byte
+    untuk semua tier dan cleanup-nya tidak pernah menghapus apa pun."""
+    roots = _dataset_roots()
+    paths = {tier: [r / tier for r in roots] for tier in fm.TIERS}
+    paths["partial"] = [r / tier for r in roots for tier in fm.TIERS]
+    paths["all"] = [r / tier for r in roots for tier in _DERIVED_TIERS]
+    return paths
 
 
 def _dir_info(path: Path, ext_filter: str | None = None) -> dict:
@@ -116,36 +128,61 @@ class CleanupResponse(BaseModel):
 async def storage_summary() -> JSONResponse:
     tier_paths = _get_tier_paths()
     tiers = {}
+    by_source: dict[str, dict] = {}
     total_mb = 0.0
 
-    for tier_name, paths in [
-        ("raw",    tier_paths["raw"]),
-        ("bronze", tier_paths["bronze"]),
-        ("silver", tier_paths["silver"]),
-        ("gold",   tier_paths["gold"]),
-    ]:
+    for tier_name in fm.TIERS:
         size_mb = 0.0
         count   = 0
-        for p in paths:
-            info = _dir_info(p)
+        sources: dict[str, dict] = {}
+
+        for tier_dir in tier_paths[tier_name]:
+            info = _dir_info(tier_dir)
             size_mb += info["size_mb"]
             count   += info["file_count"]
+            # Pecahan per source dibaca dari subfolder source di dalam tier.
+            # Tier fusion tidak punya level itu (isinya gabungan semua
+            # source), jadi dilewati -- sama seperti folder_manager.
+            for src in fm.sources_for_tier(tier_name):
+                sub = _dir_info(tier_dir / src)
+                if sub["file_count"] == 0:
+                    continue
+                agg = sources.setdefault(src, {"size_mb": 0.0, "file_count": 0})
+                agg["size_mb"] += sub["size_mb"]
+                agg["file_count"] += sub["file_count"]
+                tot = by_source.setdefault(src, {"size_mb": 0.0, "file_count": 0})
+                tot["size_mb"] += sub["size_mb"]
+                tot["file_count"] += sub["file_count"]
 
         total_mb += size_mb
         tiers[tier_name] = {
             "size_mb":    round(size_mb, 2),
             "size_human": _human(size_mb),
             "file_count": count,
+            "sources": {
+                src: {
+                    "size_mb": round(v["size_mb"], 2),
+                    "size_human": _human(v["size_mb"]),
+                    "file_count": v["file_count"],
+                }
+                for src, v in sources.items()
+            },
         }
 
-    # Hitung file .part (download tidak selesai)
+    # Hitung file .part (download tidak selesai). Sisa download terputus bisa
+    # muncul di tier mana pun yang menulis lewat file .part, bukan cuma raw.
     partial_mb    = 0.0
     partial_count = 0
-    for p in tier_paths["raw"]:
-        if p.exists():
-            for f in p.rglob("*.part"):
-                partial_mb    += f.stat().st_size / (1024 ** 2)
-                partial_count += 1
+    seen_partial: set[Path] = set()
+    for p in tier_paths["partial"]:
+        if not p.exists():
+            continue
+        for f in p.rglob("*.part"):
+            if f in seen_partial:
+                continue
+            seen_partial.add(f)
+            partial_mb    += f.stat().st_size / (1024 ** 2)
+            partial_count += 1
 
     return JSONResponse(content={
         "tiers": {
@@ -166,9 +203,22 @@ async def storage_summary() -> JSONResponse:
             },
             "gold": {
                 **tiers["gold"],
-                "description": "COG production-ready (Module 4) — ini yang terpenting",
+                "description": "COG analysis-ready per source (Module 4) — ini yang terpenting",
                 "note":        "JANGAN hapus ini kecuali scene sudah tidak diperlukan",
             },
+            "fusion": {
+                **tiers["fusion"],
+                "description": "HDF5 multi-modal gabungan semua source (Module 9)",
+                "note":        "Deliverable akhir — tidak ikut terhapus oleh tier 'all'",
+            },
+        },
+        "by_source": {
+            src: {
+                "size_mb": round(v["size_mb"], 2),
+                "size_human": _human(v["size_mb"]),
+                "file_count": v["file_count"],
+            }
+            for src, v in by_source.items()
         },
         "partial_downloads": {
             "size_mb":    round(partial_mb, 2),
@@ -189,8 +239,8 @@ async def storage_summary() -> JSONResponse:
     description="Tampilkan daftar file lengkap di tier tertentu (raw/bronze/silver/gold).",
 )
 async def list_files(tier: StorageTier) -> JSONResponse:
-    if tier not in ("raw", "bronze", "silver", "gold", "partial"):
-        raise HTTPException(400, f"Tier tidak valid: {tier}")
+    if tier == "all":
+        raise HTTPException(400, "Tier 'all' hanya untuk cleanup, bukan listing")
 
     tier_paths = _get_tier_paths()
     paths = tier_paths.get(tier, [])
@@ -227,12 +277,15 @@ async def cleanup_storage(req: CleanupRequest) -> CleanupResponse:
 
     # Tentukan paths yang akan dibersihkan
     if req.tier == "all":
-        # Hapus semua KECUALI gold (terlalu berbahaya hapus gold tanpa konfirmasi)
-        paths_to_clean = tier_paths["raw"] + tier_paths["bronze"] + tier_paths["silver"]
-        logger.warning("[CLEANUP] Cleanup ALL (raw+bronze+silver) dry_run=%s", req.dry_run)
+        # Hapus tier turunan saja; gold + fusion adalah deliverable akhir dan
+        # terlalu berbahaya dihapus tanpa konfirmasi eksplisit per tier.
+        paths_to_clean = tier_paths["all"]
+        logger.warning(
+            "[CLEANUP] Cleanup ALL (%s) dry_run=%s",
+            "+".join(_DERIVED_TIERS), req.dry_run,
+        )
     elif req.tier == "partial":
-        # Hanya file .part
-        paths_to_clean = tier_paths["raw"]  # .part biasanya di raw dir
+        paths_to_clean = tier_paths["partial"]
     else:
         paths_to_clean = tier_paths.get(req.tier, [])
 

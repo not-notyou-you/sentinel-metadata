@@ -17,7 +17,7 @@ from etl.module9_fusion import (
     ensure_gpm_inputs_for_date,
     ensure_modis_inputs_for_date,
 )
-from etl.pipeline_logger import PipelineLogger
+from etl.pipeline_logger import PipelineLogger, dataset_log_file
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +103,16 @@ class LiveScheduler:
     def _check_and_ingest_source(self, live: dict, source: dict) -> bool:
         name = source["source_name"]
         if name == "SENTINEL1":
+            # run_dataset_job opens the dataset run log itself.
             return self._check_and_ingest_sentinel1(live, source)
-        if name == "MODIS":
-            return self._check_and_ingest_modis(live, source)
-        if name == "GPM":
-            return self._check_and_ingest_gpm(live, source)
+        # MODIS/GPM never pass through run_dataset_job, so without this wrapper
+        # their events reached processing_logs only and never the .txt file.
+        if name in ("MODIS", "GPM"):
+            with dataset_log_file(live["name"]):
+                logger.info("[LIVE] %s: mulai cek & ingest dataset=%r", name, live["name"])
+                if name == "MODIS":
+                    return self._check_and_ingest_modis(live, source)
+                return self._check_and_ingest_gpm(live, source)
         logger.warning("[LIVE] sumber tidak dikenal: %s", name)
         return False
 

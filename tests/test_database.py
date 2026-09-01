@@ -119,20 +119,32 @@ class TestSchemaCreation:
         }
         assert required.issubset(cols)
 
+    # Modules 1-6 + FUSION + GOLD_EXPORT (the last added by migration 013,
+    # when GOLD stopped meaning "the fused stack" and became per-source COGs).
+    EXPECTED_STAGES = [
+        "DOWNLOAD", "CROP", "LEE_FILTER", "COG_EXPORT",
+        "ORCHESTRATE", "QUALITY_ANALYTICS", "FUSION", "GOLD_EXPORT",
+    ]
+
     def test_processing_stages_seeded(self, db_client):
-        """processing_stages must have exactly 7 seeded rows (Modules 1-6 + FUSION)."""
+        """processing_stages must hold exactly the seeded stage rows."""
         with db_client.session() as sess:
-            count = sess.scalar(text("SELECT COUNT(*) FROM processing_stages"))
-        assert count == 7, f"Expected 7 stages, got {count}"
+            names = set(sess.scalars(text("SELECT stage_name FROM processing_stages")).all())
+        assert names == set(self.EXPECTED_STAGES), (
+            f"missing: {set(self.EXPECTED_STAGES) - names}, "
+            f"unexpected: {names - set(self.EXPECTED_STAGES)}"
+        )
 
     def test_processing_stages_order(self, db_client):
-        """Stages must be ordered 1-7 with unique stage_order."""
+        """Stages must be ordered 1-N with unique, sequential stage_order."""
         with db_client.session() as sess:
             rows = sess.execute(
                 text("SELECT stage_order, stage_name FROM processing_stages ORDER BY stage_order")
             ).fetchall()
         orders = [r[0] for r in rows]
-        assert orders == list(range(1, 8)), f"Stage orders not sequential: {orders}"
+        assert orders == list(range(1, len(self.EXPECTED_STAGES) + 1)), (
+            f"Stage orders not sequential: {orders}"
+        )
 
 
 # ---------------------------------------------------------------------------

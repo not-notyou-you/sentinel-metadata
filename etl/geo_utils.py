@@ -88,7 +88,7 @@ def parse_bbox_string(raw: str) -> tuple[float, float, float, float]:
 # (lewat location_resolver) dan endpoint pencarian lokasi memakai fungsi yang
 # sama, sehingga penggantian provider cukup dilakukan di berkas ini.
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-USER_AGENT = "sentinel-sentinel-flood-pipeline/1.0"
+USER_AGENT = "the-trinity-flood-pipeline/1.0"
 GEOCODE_TIMEOUT_SEC = 15
 
 

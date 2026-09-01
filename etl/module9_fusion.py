@@ -245,9 +245,17 @@ def _write_fusion_h5(
     acquisition_datetime: datetime,
     processing_datetime: datetime,
     aoi_bbox: tuple[float, float, float, float],
+    crs: object | None = None,
+    transform: object | None = None,
 ) -> None:
     """Tulis stack fusion. `layers` memetakan path dataset HDF5
-    ("modis/NDVI") ke arraynya; h5py membuat group perantaranya sendiri."""
+    ("modis/NDVI") ke arraynya; h5py membuat group perantaranya sendiri.
+
+    `crs`/`transform` adalah grid referensi scene S1 yang semua layer sudah
+    direproject ke sana. Keduanya wajib ikut ditulis: `aoi_bbox` adalah kotak
+    AOI yang diminta, bukan batas raster hasilnya, jadi tanpa affine transform
+    yang sebenarnya konsumen tidak bisa memetakan piksel ke koordinat bumi
+    selain dengan menebak."""
     ref = layers["sentinel1/VV"]
     height, width = ref.shape
     chunks = (min(HDF5_CHUNK_MAX, height), min(HDF5_CHUNK_MAX, width))
@@ -267,6 +275,20 @@ def _write_fusion_h5(
         f.attrs["processing_datetime"] = processing_datetime.isoformat()
         f.attrs["aoi_bbox"] = list(aoi_bbox)
         f.attrs["layers"] = list(layers)
+        f.attrs["height"] = height
+        f.attrs["width"] = width
+        if crs is not None:
+            # WKT + string CRS: WKT supaya tidak bergantung ke lookup EPSG di
+            # sisi pembaca, string pendek ("EPSG:4326") untuk keterbacaan.
+            f.attrs["crs"] = str(crs)
+            try:
+                f.attrs["crs_wkt"] = crs.to_wkt()
+            except AttributeError:
+                pass
+        if transform is not None:
+            # Urutan GDAL-style 6 elemen (a, b, c, d, e, f) — sama dengan
+            # rasterio.Affine, jadi bisa langsung Affine(*attrs["transform"]).
+            f.attrs["transform"] = [float(v) for v in tuple(transform)[:6]]
 
     logger.info(
         "[M9] Saving fusion H5 to FUSION tier: %s shape=(%d, %d) layers=%d",
@@ -739,7 +761,7 @@ def create_fusion_stack(
         _write_fusion_h5(
             h5_path, layers,
             acquisition_datetime=center_dt, processing_datetime=processing_dt,
-            aoi_bbox=aoi_bbox,
+            aoi_bbox=aoi_bbox, crs=ref_crs, transform=ref_transform,
         )
 
         modis_scene_id = None

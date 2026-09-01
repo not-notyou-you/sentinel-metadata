@@ -831,5 +831,28 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .qual-band { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
 .qual-band b { color: var(--text); font-weight: 600; }
 
-.struct-files { margin-top: 12px; }
+/* Nama berkas S1 (product_identifier, ~70 karakter monospace) jauh lebih
+   lebar dari layar 375px. Tabelnya digulung di dalam kontainernya sendiri
+   supaya badan halaman tidak ikut menggulir horizontal di mobile. */
+.struct-files { margin-top: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .struct-files:empty { display: none; }
+.struct-files .scene-table { min-width: 420px; }
+.struct-files .scene-table td.mono { word-break: break-all; }
+
+/* THE TRINITY brand footer — slogan strip, purely cosmetic */
+.app-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  text-align: center;
+  padding: 6px 12px;
+  pointer-events: none;
+}
+.app-footer-slogan {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  opacity: 0.55;
+  font-family: "IBM Plex Mono", monospace;
+}

@@ -143,6 +143,12 @@ class LineageStep(BaseModel):
     input_checksum: str | None
     output_checksum: str | None
     created_at: datetime
+    # Sejak layout tier-source, satu dataset punya rantai paralel per sensor;
+    # ketiga field ini yang membuat langkah rantai bisa dibaca per source
+    # tanpa menarik tiap product satu per satu.
+    source: str | None = None
+    parent_tier: str | None = None
+    child_tier: str | None = None
 
 
 class LineageResponse(BaseModel):

@@ -255,6 +255,72 @@ class TestDataQuality:
 class TestLineageTracking:
     """Verify parent-child lineage recording and traversal."""
 
+    def test_every_transform_type_resolves_to_a_seeded_stage(self, db_client):
+        """Regression: GOLD_EXPORT was added to processing_stages by migration
+        013 but never to _TRANSFORM_STAGE_MAP, so every SILVER->GOLD lineage
+        write raised "Unknown transformation_type" and failed the GOLD stage
+        after the COGs had already been written to disk."""
+        from sqlalchemy import select
+
+        from etl.database_client import ProcessingStage
+        from etl.lineage_tracker import LineageTracker
+
+        assert "GOLD_EXPORT" in LineageTracker._TRANSFORM_STAGE_MAP
+
+        with db_client.session() as sess:
+            seeded = set(sess.scalars(select(ProcessingStage.stage_name)).all())
+
+        unresolved = {
+            t: stage
+            for t, stage in LineageTracker._TRANSFORM_STAGE_MAP.items()
+            if stage not in seeded
+        }
+        assert not unresolved, f"transform types with no processing_stages row: {unresolved}"
+
+    def test_silver_to_gold_export_lineage_is_writable(self, db_client, lineage, meta, sample_scene):
+        """The exact write that failed the GOLD stage in production: a
+        SILVER -> GOLD link tagged GOLD_EXPORT, for each of the three sources
+        the GOLD tier now holds (Sentinel-1, MODIS, GPM)."""
+        from sqlalchemy import select
+
+        from etl.database_client import ProcessingStage
+
+        lee_job  = meta.insert_processing_job(sample_scene, "LEE_FILTER")
+        gold_job = meta.insert_processing_job(sample_scene, "GOLD_EXPORT")
+        with db_client.session() as sess:
+            gold_stage_id = sess.scalar(
+                select(ProcessingStage.stage_id).where(
+                    ProcessingStage.stage_name == "GOLD_EXPORT"
+                )
+            )
+
+        for source, product_type, band in (
+            ("SENTINEL1", "LEE_FILTERED", "VV"),
+            ("MODIS",     "MODIS_SILVER", "NDVI"),
+            ("GPM",       "GPM_SILVER",   "PRECIP"),
+        ):
+            silver_id = meta.insert_data_product(
+                scene_id=sample_scene, job_id=lee_job,
+                product_tier="SILVER", source=source, product_type=product_type, band_name=band,
+                file_path=f"/tmp/silver_{source}.tif", file_name=f"silver_{source}.tif",
+                file_size_mb=48.0, data_hash_sha256=fake_hash(f"GE_SILVER_{source}"),
+            )
+            gold_id = meta.insert_data_product(
+                scene_id=sample_scene, job_id=gold_job,
+                product_tier="GOLD", source=source, product_type="COG", band_name=band,
+                file_path=f"/tmp/gold_{source}.tif", file_name=f"gold_{source}.tif",
+                file_size_mb=32.0, data_hash_sha256=fake_hash(f"GE_GOLD_{source}"),
+            )
+
+            lineage_id = lineage.record_transformation(
+                silver_id, gold_id, "GOLD_EXPORT", gold_job, {"source": source.lower()},
+            )
+            assert lineage_id is not None
+
+            chain = lineage.get_lineage_chain(gold_id, direction="ancestors")
+            assert [step["transformation_type"] for step in chain] == ["GOLD_EXPORT"]
+            assert chain[0]["stage_id"] == gold_stage_id
+
     def test_lineage_chain_recorded(self, db_client, lineage, meta, sample_scene):
         """Full pipeline lineage (RAW→BRONZE→SILVER→GOLD) must be queryable."""
         dl_job     = meta.insert_processing_job(sample_scene, "DOWNLOAD")

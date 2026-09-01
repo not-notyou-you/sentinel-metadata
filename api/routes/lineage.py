@@ -24,7 +24,10 @@ router = APIRouter()
     summary="Transformation lineage (ancestors)",
     description=(
         "Trace the full provenance chain from a product back to its RAW source. "
-        "Returns ordered list of transformation steps: CROP → LEE_FILTER → COG_EXPORT. "
+        "Returns ordered list of transformation steps: CROP → LEE_FILTER → GOLD_EXPORT. "
+        "Each step carries `source` plus `parent_tier`/`child_tier`, so a dataset's "
+        "parallel per-sensor chains (S1 RAW→GOLD, MODIS/GPM SILVER→GOLD) stay "
+        "distinguishable. "
         "Use direction=descendants to trace forward to derived products."
     ),
 )

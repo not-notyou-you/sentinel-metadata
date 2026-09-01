@@ -28,27 +28,103 @@ def _slug_filename(name: str) -> str:
     return slug or "dataset"
 
 
-@contextmanager
-def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator[Path]:
-    """Attach a per-dataset FileHandler to this module's logger for the
-    duration of a batch run, so every [PLOG] event (download progress and
-    stage transitions alike) is appended to one .txt file immediately,
-    without waiting for the batch to finish. Removed again on exit."""
+# The whole `etl` package logger, not just this module's. Stage transitions
+# come from here ([PLOG]), but the tracebacks that explain a failure come from
+# etl.module5_orchestrator, etl.module9_fusion, etc. Attaching to the parent
+# captures both.
+_ETL_LOGGER_NAME = __name__.split(".")[0]
+
+# threading.Thread does not inherit contextvars, and two datasets can process
+# concurrently (etl.dataset_manager keys its worker threads per dataset), so
+# thread ident -> log path is what keeps one run's lines out of another's file.
+_scope_lock = threading.Lock()
+_thread_scopes: dict[int, Path] = {}
+_scope_depth = 0
+_saved_level: int | None = None
+
+
+class _DatasetScopeFilter(logging.Filter):
+    """Pass only records emitted by threads enrolled in this dataset run."""
+
+    def __init__(self, log_path: Path) -> None:
+        super().__init__()
+        self._log_path = log_path
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        with _scope_lock:
+            return _thread_scopes.get(record.thread) == self._log_path
+
+
+def adopt_dataset_log_scope(log_path: Path) -> None:
+    """Enroll the calling thread in `log_path`'s dataset run.
+
+    Worker threads started inside a `dataset_log_file(...)` block must call
+    this first; records from threads that never enroll are filtered out of the
+    file (they still reach the console via propagation)."""
+    with _scope_lock:
+        _thread_scopes[threading.get_ident()] = log_path
+
+
+def dataset_log_path(dataset_name: str, logs_dir: str | None = None) -> Path:
+    """Resolve the .txt path a dataset's run log is appended to."""
     logs_dir = logs_dir or os.getenv("LOGS_DIR", "logs_pipeline")
     log_dir_path = Path(logs_dir)
     log_dir_path.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir_path / f"{_slug_filename(dataset_name)}.txt"
+    return log_dir_path / f"{_slug_filename(dataset_name)}.txt"
+
+
+@contextmanager
+def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator[Path]:
+    """Attach a per-dataset FileHandler to the `etl` package logger for the
+    duration of a batch run, so every [PLOG] event (download progress and
+    stage transitions alike) plus any module traceback is appended to one .txt
+    file immediately, without waiting for the batch to finish. Removed again
+    on exit.
+
+    The `etl` logger is forced to INFO for the duration: it is NOTSET by
+    default, so it inherited root's WARNING and dropped every INFO record
+    before any handler could see it — which is why these files previously
+    contained FAILED lines only, or nothing at all."""
+    global _scope_depth, _saved_level
+
+    log_path = dataset_log_path(dataset_name, logs_dir)
 
     handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s %(message)s"
+        )
+    )
     handler.setLevel(logging.INFO)
+    handler.addFilter(_DatasetScopeFilter(log_path))
 
-    logger.addHandler(handler)
+    etl_logger = logging.getLogger(_ETL_LOGGER_NAME)
+    with _scope_lock:
+        if _scope_depth == 0:
+            _saved_level = etl_logger.level
+            etl_logger.setLevel(logging.INFO)
+        _scope_depth += 1
+        _thread_scopes[threading.get_ident()] = log_path
+
+    etl_logger.addHandler(handler)
+    logger.info(
+        "[PLOG-FILE] run log opened for dataset=%r -> %s", dataset_name, log_path
+    )
     try:
         yield log_path
     finally:
-        logger.removeHandler(handler)
+        logger.info("[PLOG-FILE] run log closed for dataset=%r", dataset_name)
+        etl_logger.removeHandler(handler)
         handler.close()
+        with _scope_lock:
+            for ident, path in [
+                (i, p) for i, p in _thread_scopes.items() if p == log_path
+            ]:
+                del _thread_scopes[ident]
+            _scope_depth -= 1
+            if _scope_depth == 0 and _saved_level is not None:
+                etl_logger.setLevel(_saved_level)
+                _saved_level = None
 
 
 class PipelineLogManager:

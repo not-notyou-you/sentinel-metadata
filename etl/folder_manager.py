@@ -242,6 +242,20 @@ def list_scenes(dataset_id: int, dataset_name: str, tier: str, source: str) -> l
     return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
 
 
+def list_loose_files(
+    dataset_id: int, dataset_name: str, tier: str, source: str
+) -> list[Path]:
+    """File yang duduk langsung di folder source, tanpa folder scene di
+    antaranya — yaitu cache granule mentah `raw/modis/` dan `raw/gpm/`
+    (lihat FLAT_RAW_SOURCES). `list_scenes` cuma mengembalikan direktori,
+    jadi tanpa fungsi ini granule-granule itu tak pernah muncul di listing
+    berkas meski ikut terhitung di `storage_breakdown`."""
+    p = get_source_dir(dataset_id, dataset_name, tier, source)
+    if not p.exists():
+        return []
+    return sorted(f for f in p.iterdir() if f.is_file() and not f.name.startswith("."))
+
+
 def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
     p = get_tier_dir(dataset_id, dataset_name, "fusion")
     if not p.exists():

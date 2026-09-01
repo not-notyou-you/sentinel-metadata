@@ -358,6 +358,14 @@ async def list_dataset_tier_files(
                 result.append(
                     _entry(sc, src, fm.get_scene_files(dataset_id, name, tier_l, src, sc))
                 )
+            # Cache granule mentah MODIS/GPM duduk langsung di raw/{source}/
+            # tanpa folder scene, jadi list_scenes() di atas melewatinya.
+            # Tanpa cabang ini listing berkas melaporkan tier RAW kosong
+            # untuk MODIS/GPM padahal storage/summary menghitung granulenya.
+            if scene is None:
+                loose = fm.list_loose_files(dataset_id, name, tier_l, src)
+                if loose:
+                    result.append(_entry("(granule cache)", src, loose))
 
     return DatasetTierFilesResponse(
         dataset_id=dataset_id, tier=tier_l, source=source_l, scenes=result

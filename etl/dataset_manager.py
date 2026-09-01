@@ -13,6 +13,7 @@ from etl.database_client import (
     SatelliteScene,
     SceneJobState,
 )
+from etl import folder_manager as fm
 from etl.location_resolver import resolve_location, resolve_region_id
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,14 @@ class DatasetManager:
             "[DATASET] created dataset_id=%d job_id=%d name=%s tiers=%s",
             dataset_id, job_id, name, normalized_tiers,
         )
+        # metadata.json ditulis sejak dataset dibuat, bukan menunggu job
+        # pertama selesai: sebuah dataset yang masih mengunduh (berjam-jam
+        # untuk scene S1) atau yang discovery-nya nol scene tidak boleh
+        # membuat /api/datasets/{id}/metadata membalas 404.
+        try:
+            self.write_metadata_file(dataset_id, total_size_bytes=0)
+        except OSError:
+            logger.warning("[DATASET] gagal tulis metadata.json awal dataset_id=%d", dataset_id, exc_info=True)
         self._spawn_job_runner(job_id)
         with self._db.session() as sess:
             job = sess.get(DatasetJob, job_id)
@@ -582,6 +591,60 @@ class DatasetManager:
             dataset = sess.get(Dataset, job.dataset_id)
             if dataset:
                 dataset.status = status
+
+    def write_metadata_file(self, dataset_id: int, total_size_bytes: int | None = None) -> None:
+        """Tulis ulang metadata.json level-dataset.
+
+        Ringkasan read-only turunan tabel `datasets` + isi disk — kalau isinya
+        berbeda dari API, database yang benar. `storage_usage` dipecah per tier
+        lalu per source lewat folder_manager.storage_breakdown, sumber angka
+        yang sama dengan endpoint /api/datasets/{id}/storage/summary.
+
+        Dipanggil saat dataset dibuat (supaya file-nya ada sejak awal, bukan
+        cuma setelah job pertama selesai) dan tiap kali job berhenti — termasuk
+        di jalur berhenti-awal seperti discovery gagal atau nol scene, yang
+        dulu keluar tanpa pernah menulis file ini sama sekali sehingga
+        /api/datasets/{id}/metadata membalas 404 selamanya."""
+        dataset = self.get_dataset(dataset_id)
+        if dataset is None:
+            return
+        breakdown = fm.storage_breakdown(dataset_id, dataset["name"])
+        if total_size_bytes is None:
+            total_size_bytes = breakdown["total_size_bytes"]
+        quality_settings = dataset.get("quality_settings") or {}
+        fm.write_dataset_metadata(dataset_id, dataset["name"], {
+            "dataset_id": dataset_id,
+            "name": dataset["name"],
+            "location_label": dataset["location_label"],
+            "bbox_wkt": dataset.get("bbox_wkt"),
+            "date_range": {"start": dataset["date_start"], "end": dataset["date_end"]},
+            "date_start": dataset["date_start"],
+            "date_end": dataset["date_end"],
+            "mode": dataset.get("dataset_kind"),
+            "quality_threshold": quality_settings.get("min_quality_score"),
+            "required_tiers": dataset["required_tiers"],
+            "sources": sorted(breakdown["sources"]),
+            "status": dataset["status"],
+            "total_scenes": dataset["total_scenes"],
+            "completed_scenes": dataset["completed_scenes"],
+            "failed_scenes": dataset["failed_scenes"],
+            "total_size_bytes": total_size_bytes,
+            "storage_usage": {
+                tier: {
+                    "size_bytes": info["size_bytes"],
+                    "file_count": info["file_count"],
+                    "scene_count": info["scene_count"],
+                    "sources": {
+                        src: {"size_bytes": v["size_bytes"], "file_count": v["file_count"]}
+                        for src, v in info["sources"].items()
+                    },
+                }
+                for tier, info in breakdown["tiers"].items()
+            },
+            "storage_by_source": breakdown["sources"],
+            "acquisition_dates": self.get_acquisition_dates(dataset_id),
+            "updated_at": datetime.now(timezone.utc),
+        })
 
     def set_dataset_size(self, dataset_id: int, total_size_bytes: int) -> None:
         with self._db.session() as sess:

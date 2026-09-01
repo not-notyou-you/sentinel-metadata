@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,7 +31,11 @@ from etl.module3_lee_filter import run as lee_run
 from etl.module4_gold_export import export_scene_to_gold, gold_product_type
 from etl.module6_analytics import compute_band_metrics
 from etl.module9_fusion import FUSION_LAYERS, create_fusion_stack, ensure_aux_inputs_for_date
-from etl.pipeline_logger import PipelineLogger, dataset_log_file
+from etl.pipeline_logger import (
+    PipelineLogger,
+    adopt_dataset_log_scope,
+    dataset_log_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,9 @@ class _JobContext:
     base_dir: Path
     pause_event: threading.Event
     cancel_event: threading.Event
+    # Set once run_dataset_job enters its dataset_log_file(...) block; worker
+    # threads enrol themselves with it so their records reach the .txt file.
+    log_path: Path | None = None
 
 
 def _now() -> datetime:
@@ -85,51 +93,16 @@ def _dir_size_bytes(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
-def _write_dataset_metadata(dsmgr: DatasetManager, dataset_id: int, total_size_bytes: int) -> None:
-    """Tulis ulang metadata.json level-dataset.
-
-    Ringkasan read-only turunan tabel `datasets` + isi disk — kalau isinya
-    berbeda dari API, database yang benar. `storage_usage` dipecah per tier
-    lalu per source lewat folder_manager.storage_breakdown, sumber angka yang
-    sama dengan endpoint /api/datasets/{id}/storage/summary."""
-    dataset = dsmgr.get_dataset(dataset_id)
-    if dataset is None:
-        return
-    breakdown = fm.storage_breakdown(dataset_id, dataset["name"])
-    quality_settings = dataset.get("quality_settings") or {}
-    fm.write_dataset_metadata(dataset_id, dataset["name"], {
-        "dataset_id": dataset_id,
-        "name": dataset["name"],
-        "location_label": dataset["location_label"],
-        "bbox_wkt": dataset.get("bbox_wkt"),
-        "date_range": {"start": dataset["date_start"], "end": dataset["date_end"]},
-        "date_start": dataset["date_start"],
-        "date_end": dataset["date_end"],
-        "mode": dataset.get("dataset_kind"),
-        "quality_threshold": quality_settings.get("min_quality_score"),
-        "required_tiers": dataset["required_tiers"],
-        "sources": sorted(breakdown["sources"]),
-        "status": dataset["status"],
-        "total_scenes": dataset["total_scenes"],
-        "completed_scenes": dataset["completed_scenes"],
-        "failed_scenes": dataset["failed_scenes"],
-        "total_size_bytes": total_size_bytes,
-        "storage_usage": {
-            tier: {
-                "size_bytes": info["size_bytes"],
-                "file_count": info["file_count"],
-                "scene_count": info["scene_count"],
-                "sources": {
-                    src: {"size_bytes": v["size_bytes"], "file_count": v["file_count"]}
-                    for src, v in info["sources"].items()
-                },
-            }
-            for tier, info in breakdown["tiers"].items()
-        },
-        "storage_by_source": breakdown["sources"],
-        "acquisition_dates": dsmgr.get_acquisition_dates(dataset_id),
-        "updated_at": _now(),
-    })
+def _write_dataset_metadata(
+    dsmgr: DatasetManager, dataset_id: int, total_size_bytes: int | None = None
+) -> None:
+    """Delegasi ke DatasetManager.write_metadata_file — definisinya pindah ke
+    sana supaya create_dataset() bisa menulis metadata.json sejak dataset
+    dibuat, bukan cuma orchestrator setelah job selesai."""
+    try:
+        dsmgr.write_metadata_file(dataset_id, total_size_bytes=total_size_bytes)
+    except OSError:
+        logger.warning("[ORCH] gagal tulis metadata.json dataset_id=%d", dataset_id, exc_info=True)
 
 
 def _process_scene(
@@ -176,7 +149,16 @@ def _process_scene(
     )
     jc.meta.complete_job(dl_job_id, output_size_mb=dl_result.file_size_mb)
     produced_tiers.append("RAW")
+    # .SAFE.zip ikut didaftarkan sebagai file tier RAW. _download_worker selalu
+    # memanggil download_scene(keep_raw=True) karena module1b_calibrate membaca
+    # LUT kalibrasi dari dalam ZIP saat tahap CROP; kalau ZIP-nya tidak
+    # tercatat di sini, _cleanup_scene_tiers cuma menghapus dua TIFF hasil
+    # ekstrak dan meninggalkan ~2 GB ZIP per scene di disk selamanya untuk
+    # dataset yang tidak meminta tier RAW. Cleanup baru jalan setelah seluruh
+    # pipeline scene selesai (lewat cleanup_queue), jadi kalibrasi sudah lewat.
     produced_files["RAW"] = [dl_result.vv_tif_path, dl_result.vh_tif_path]
+    if dl_result.zip_path:
+        produced_files["RAW"].append(dl_result.zip_path)
 
     if "CROP" in jc.skip_stages:
         return scene_id, produced_tiers, produced_files
@@ -470,7 +452,33 @@ def _cleanup_scene_tiers(
     logger.info("[ORCH] cleanup pid=%s tiers dihapus=%s", pid, sorted(tiers_to_delete))
 
 
+def _record_worker_failure(
+    jc: _JobContext, pid: str, stage: str, exc: BaseException
+) -> None:
+    """Persist a worker-level failure to processing_logs.
+
+    Exceptions raised outside a `plog.stage(...)` block — DB registration,
+    lineage recording, cleanup — used to be visible only as
+    dataset_scene_jobs.last_error, so neither the log file nor /logs ever
+    showed why a stage failed. Never raises: logging must not mask the
+    original error."""
+    try:
+        jc.plog.log_event(
+            jc.dataset_id, pid, "ORCHESTRATOR", stage, "FAILED",
+            f"{stage} failed: {exc}",
+            {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "traceback": traceback.format_exc()[-4000:],
+            },
+        )
+    except Exception:
+        logger.exception("[ORCH] gagal mencatat kegagalan pid=%s stage=%s", pid, stage)
+
+
 def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue) -> None:
+    if jc.log_path:
+        adopt_dataset_log_scope(jc.log_path)
     for scene_meta in scenes:
         jc.pause_event.wait()
         if jc.cancel_event.is_set():
@@ -510,6 +518,7 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             download_queue.put((scene_meta, result))
         except Exception as exc:
             logger.exception("[ORCH] download gagal pid=%s job_id=%d", pid, jc.job_id)
+            _record_worker_failure(jc, pid, "DOWNLOAD", exc)
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, stage_status="FAILED", last_error=str(exc)[:2000], completed_at=_now()
             )
@@ -518,6 +527,8 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
 
 
 def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queue) -> None:
+    if jc.log_path:
+        adopt_dataset_log_scope(jc.log_path)
     while True:
         item = download_queue.get()
         if item is None:
@@ -549,6 +560,7 @@ def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queu
             cleanup_queue.put((pid, scene_id, produced_tiers, produced_files))
         except Exception as exc:
             logger.exception("[ORCH] pipeline gagal pid=%s job_id=%d", pid, jc.job_id)
+            _record_worker_failure(jc, pid, "SCENE_PIPELINE", exc)
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, stage_status="FAILED", last_error=str(exc)[:2000], completed_at=_now()
             )
@@ -559,6 +571,8 @@ def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queu
 
 
 def _cleanup_worker(jc: _JobContext, cleanup_queue: Queue) -> None:
+    if jc.log_path:
+        adopt_dataset_log_scope(jc.log_path)
     while True:
         item = cleanup_queue.get()
         if item is None:
@@ -570,8 +584,9 @@ def _cleanup_worker(jc: _JobContext, cleanup_queue: Queue) -> None:
                 jc.job_id, pid, current_stage="CLEANUP", stage_status="COMPLETED", completed_at=_now()
             )
             jc.dsmgr.increment_job_counters(jc.job_id, cleaned=1)
-        except Exception:
+        except Exception as exc:
             logger.exception("[ORCH] cleanup gagal pid=%s job_id=%d", pid, jc.job_id)
+            _record_worker_failure(jc, pid, "CLEANUP", exc)
 
 
 def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
@@ -635,11 +650,13 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     except Exception:
         logger.exception("[ORCH] discovery gagal job_id=%d", job_id)
         dsmgr.set_job_status(job_id, "FAILED", completed_at=_now())
+        _write_dataset_metadata(dsmgr, dataset_id)
         return
 
     if not scenes:
         logger.info("[ORCH] tidak ada scene ditemukan job_id=%d", job_id)
         dsmgr.set_job_status(job_id, "COMPLETED", completed_at=_now())
+        _write_dataset_metadata(dsmgr, dataset_id)
         return
 
     if min_cloud_cover is not None:
@@ -650,6 +667,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
         if not scenes:
             logger.info("[ORCH] semua scene tersaring cloud_cover job_id=%d", job_id)
             dsmgr.set_job_status(job_id, "COMPLETED", completed_at=_now())
+            _write_dataset_metadata(dsmgr, dataset_id)
             return
 
     dsmgr.create_scene_job_states(job_id, [s["product_identifier"] for s in scenes])
@@ -658,7 +676,13 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     download_queue: Queue = Queue(maxsize=3)
     cleanup_queue: Queue = Queue()
 
-    with dataset_log_file(dataset["name"]):
+    with dataset_log_file(dataset["name"]) as run_log_path:
+        # Worker threads read this to enrol in the run's log scope.
+        jc.log_path = run_log_path
+        logger.info(
+            "[ORCH] job_id=%d start dataset=%r scenes=%d tiers=%s log=%s",
+            job_id, dataset["name"], len(scenes), jc.required_tiers, run_log_path,
+        )
         t_download = threading.Thread(target=_download_worker, args=(jc, scenes, download_queue), daemon=False)
         t_pipeline = threading.Thread(target=_pipeline_worker, args=(jc, download_queue, cleanup_queue), daemon=False)
         t_cleanup = threading.Thread(target=_cleanup_worker, args=(jc, cleanup_queue), daemon=False)

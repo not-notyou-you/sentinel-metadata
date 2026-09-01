@@ -1,8 +1,8 @@
-# Sentinel Sentinel — Flood Prediction Data Pipeline
+# The Trinity — Flood Prediction Data Pipeline
 
 ## Overview
 
-**Sentinel Sentinel** adalah sistem ETL (Extract, Transform, Load) otomatis yang mengumpulkan, memproses, dan menyimpan data satelit multi-sensor untuk prediksi banjir dan perutean evakuasi di wilayah DKI Jakarta (Jabodetabek). Sistem ini menggabungkan data dari tiga sumber utama:
+**The Trinity** adalah sistem ETL (Extract, Transform, Load) otomatis yang mengumpulkan, memproses, dan menyimpan data satelit multi-sensor untuk prediksi banjir dan perutean evakuasi di wilayah DKI Jakarta (Jabodetabek). Sistem ini menggabungkan data dari tiga sumber utama:
 
 - **Sentinel-1**: SAR (Synthetic Aperture Radar) untuk deteksi permukaan air dan genangan
 - **MODIS**: Flood detection dan analisis tutupan awan

@@ -30,8 +30,11 @@ CREATE TABLE IF NOT EXISTS datasets (
         'DRAFT', 'QUEUED', 'PREPARING', 'DOWNLOADING', 'PROCESSING',
         'PAUSED', 'CLEANUP', 'COMPLETED', 'FAILED', 'DELETING', 'DELETED'
     )),
+    -- FUSION ditambahkan oleh migrasi 014 (tier FUSION lahir di migrasi 013).
+    -- Whitelist di sini disamakan supaya instalasi baru tidak perlu langsung
+    -- menambal constraint yang sama lewat 014.
     CONSTRAINT chk_required_tiers CHECK (
-        required_tiers <@ ARRAY['RAW', 'BRONZE', 'SILVER', 'GOLD']::TEXT[]
+        required_tiers <@ ARRAY['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION']::TEXT[]
         AND array_length(required_tiers, 1) > 0
     ),
     CONSTRAINT chk_dataset_date_range CHECK (date_end >= date_start)
