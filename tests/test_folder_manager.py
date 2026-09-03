@@ -56,6 +56,25 @@ class TestPathConstruction:
         p = fm.get_fusion_dir(DATASET_ID, DATASET_NAME, "20260712")
         assert p == data_root / DATASET_DIR / "fusion" / "20260712"
 
+    def test_preview_dir_has_no_source_level(self, data_root):
+        p = fm.get_preview_dir(DATASET_ID, DATASET_NAME, "20260712")
+        assert p == data_root / DATASET_DIR / "preview" / "20260712"
+
+    def test_preview_kind_dirs(self, data_root):
+        for kind in fm.PREVIEW_KINDS:
+            p = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", kind)
+            assert p == data_root / DATASET_DIR / "preview" / "20260712" / kind
+
+    def test_preview_kind_rejects_unknown_kind(self, data_root):
+        with pytest.raises(ValueError):
+            fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "thumbnail")
+
+    def test_preview_tier_rejects_source_level(self, data_root):
+        """preview lintas-source persis seperti fusion, jadi get_source_dir
+        harus menolaknya alih-alih diam-diam membuat preview/modis/."""
+        with pytest.raises(ValueError):
+            fm.get_source_dir(DATASET_ID, DATASET_NAME, "preview", "modis")
+
     def test_granule_cache_is_flat_under_raw(self, data_root):
         p = fm.get_granule_cache_dir(DATASET_ID, DATASET_NAME, "gpm")
         assert p == data_root / DATASET_DIR / "raw" / "gpm"
@@ -139,6 +158,33 @@ class TestListingAndStorage:
 
     def test_list_fusion_scenes(self, populated):
         assert fm.list_fusion_scenes(DATASET_ID, DATASET_NAME) == ["20260712"]
+        # Pembungkus tipis di atas versi generiknya -- harus sama persis.
+        assert fm.list_sourceless_scenes(DATASET_ID, DATASET_NAME, "fusion") == ["20260712"]
+
+    def test_list_sourceless_scenes_rejects_tier_with_source(self, populated):
+        with pytest.raises(ValueError):
+            fm.list_sourceless_scenes(DATASET_ID, DATASET_NAME, "silver")
+
+    def test_preview_scene_files_include_kind_subfolders(self, data_root):
+        """Berkas preview duduk satu tingkat lebih dalam (grayscale/, colored/)
+        daripada tier lain; listing-nya harus tetap menemukannya."""
+        gray = fm.ensure_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "grayscale")
+        color = fm.ensure_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "colored")
+        (gray / "s1_vv.png").write_bytes(b"x" * 100)
+        (color / "s1_vv.png").write_bytes(b"x" * 200)
+        (fm.get_preview_dir(DATASET_ID, DATASET_NAME, "20260712")
+         / "preview_metadata.json").write_bytes(b"{}")
+
+        names = sorted(p.name for p in fm.get_preview_scene_files(DATASET_ID, DATASET_NAME, "20260712"))
+        assert names == ["preview_metadata.json", "s1_vv.png", "s1_vv.png"]
+        assert fm.list_preview_scenes(DATASET_ID, DATASET_NAME) == ["20260712"]
+
+        b = fm.storage_breakdown(DATASET_ID, DATASET_NAME)
+        assert b["tiers"]["preview"]["size_bytes"] == 302
+        assert b["tiers"]["preview"]["scene_count"] == 1
+        # Tier lintas-source dilaporkan sebagai "source" semu bernama tier-nya,
+        # supaya ukurannya tidak hilang dari agregat per-source.
+        assert b["sources"]["preview"]["size_bytes"] == 302
 
     def test_granule_cache_is_not_listed_as_scene(self, populated):
         """File granule flat di raw/modis/ bukan folder scene."""

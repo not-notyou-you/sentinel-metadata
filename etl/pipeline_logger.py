@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 import psutil
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from etl.database_client import DatabaseClient, ProcessingLog
 
@@ -41,6 +42,12 @@ _scope_lock = threading.Lock()
 _thread_scopes: dict[int, Path] = {}
 _scope_depth = 0
 _saved_level: int | None = None
+# One FileHandler per log path, reference-counted. Two runs can resolve to the
+# same file (the path is derived from the dataset *name*, so re-creating a
+# deleted dataset under the same name collides), and attaching a second
+# handler to the same path made the `etl` logger write every record twice --
+# the scope filter matches on path, so it cannot tell the handlers apart.
+_path_handlers: dict[Path, tuple[logging.Handler, int]] = {}
 
 
 class _DatasetScopeFilter(logging.Filter):
@@ -89,15 +96,6 @@ def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator
 
     log_path = dataset_log_path(dataset_name, logs_dir)
 
-    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s %(message)s"
-        )
-    )
-    handler.setLevel(logging.INFO)
-    handler.addFilter(_DatasetScopeFilter(log_path))
-
     etl_logger = logging.getLogger(_ETL_LOGGER_NAME)
     with _scope_lock:
         if _scope_depth == 0:
@@ -105,8 +103,21 @@ def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator
             etl_logger.setLevel(logging.INFO)
         _scope_depth += 1
         _thread_scopes[threading.get_ident()] = log_path
-
-    etl_logger.addHandler(handler)
+        existing = _path_handlers.get(log_path)
+        if existing is None:
+            handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s %(message)s"
+                )
+            )
+            handler.setLevel(logging.INFO)
+            handler.addFilter(_DatasetScopeFilter(log_path))
+            _path_handlers[log_path] = (handler, 1)
+            etl_logger.addHandler(handler)
+        else:
+            handler, refs = existing
+            _path_handlers[log_path] = (handler, refs + 1)
     logger.info(
         "[PLOG-FILE] run log opened for dataset=%r -> %s", dataset_name, log_path
     )
@@ -114,13 +125,21 @@ def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator
         yield log_path
     finally:
         logger.info("[PLOG-FILE] run log closed for dataset=%r", dataset_name)
-        etl_logger.removeHandler(handler)
-        handler.close()
         with _scope_lock:
-            for ident, path in [
-                (i, p) for i, p in _thread_scopes.items() if p == log_path
-            ]:
-                del _thread_scopes[ident]
+            handler, refs = _path_handlers[log_path]
+            if refs <= 1:
+                del _path_handlers[log_path]
+                etl_logger.removeHandler(handler)
+                handler.close()
+                # Thread scopes are keyed by path too, so they may only be
+                # dropped once the last run using this file has finished.
+                for ident, path in [
+                    (i, p) for i, p in _thread_scopes.items() if p == log_path
+                ]:
+                    del _thread_scopes[ident]
+            else:
+                _path_handlers[log_path] = (handler, refs - 1)
+                _thread_scopes.pop(threading.get_ident(), None)
             _scope_depth -= 1
             if _scope_depth == 0 and _saved_level is not None:
                 etl_logger.setLevel(_saved_level)
@@ -144,19 +163,33 @@ class PipelineLogManager:
         message: str,
         details: dict | None = None,
     ) -> int:
-        with self._db.session() as sess:
-            row = ProcessingLog(
-                dataset_id=dataset_id,
-                scene_id=scene_id,
-                module=module,
-                stage=stage,
-                status=status,
-                message=message,
-                details=details or {},
+        try:
+            with self._db.session() as sess:
+                row = ProcessingLog(
+                    dataset_id=dataset_id,
+                    scene_id=scene_id,
+                    module=module,
+                    stage=stage,
+                    status=status,
+                    message=message,
+                    details=details or {},
+                )
+                sess.add(row)
+                sess.flush()
+                log_id = row.log_id
+        except IntegrityError:
+            # processing_logs.dataset_id is ON DELETE CASCADE, so a dataset
+            # deleted with force=True while its job threads are still running
+            # takes its rows with it and every later insert violates the FK.
+            # That is an expected end-of-life race, not a pipeline failure:
+            # losing a log line must not abort (or mask) the work being
+            # logged, and must not turn the failure handler into a second,
+            # noisier exception.
+            logger.warning(
+                "[PLOG] dataset_id=%s sudah tidak ada - event %s/%s (%s) tidak disimpan",
+                dataset_id, module, stage, status,
             )
-            sess.add(row)
-            sess.flush()
-            log_id = row.log_id
+            return -1
 
         level = logging.ERROR if status == "FAILED" else logging.INFO
         logger.log(

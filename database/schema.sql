@@ -566,7 +566,8 @@ VALUES
     ('ORCHESTRATE',       'OR',  5, 'Pipeline orchestration, checkpointing, and retry management', 10,  1, 10),
     ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30),
     ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM)', 60, 2, 30),
-    ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30)
+    ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30),
+    ('PREVIEW',           'PV',  9, 'Render PNG preview (grayscale + colored) dari tier GOLD, sebelum FUSION', 15, 1, 15)
 ON CONFLICT (stage_name) DO NOTHING;
 
 -- Seed: Default processing rules per stage

@@ -119,11 +119,16 @@ class TestSchemaCreation:
         }
         assert required.issubset(cols)
 
-    # Modules 1-6 + FUSION + GOLD_EXPORT (the last added by migration 013,
-    # when GOLD stopped meaning "the fused stack" and became per-source COGs).
+    # Modules 1-6 + FUSION + GOLD_EXPORT (the latter added by migration 013,
+    # when GOLD stopped meaning "the fused stack" and became per-source COGs)
+    # + PREVIEW (migration 015, PNG renders of GOLD, runs before FUSION).
+    #
+    # Listed in stage_order, which is registration order and NOT execution
+    # order -- FUSION is 7 but runs after GOLD_EXPORT (8) and PREVIEW (9).
+    # Execution order lives in etl/dataset_manager.py:STAGE_TIER_INDEX.
     EXPECTED_STAGES = [
         "DOWNLOAD", "CROP", "LEE_FILTER", "COG_EXPORT",
-        "ORCHESTRATE", "QUALITY_ANALYTICS", "FUSION", "GOLD_EXPORT",
+        "ORCHESTRATE", "QUALITY_ANALYTICS", "FUSION", "GOLD_EXPORT", "PREVIEW",
     ]
 
     def test_processing_stages_seeded(self, db_client):

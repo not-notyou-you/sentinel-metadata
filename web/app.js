@@ -1,4 +1,9 @@
-const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','GOLD_EXPORT','FUSION','CLEANUP'];
+// Urutan eksekusi tahap per scene. PREVIEW harus ikut walau bukan tier
+// lineage: tierCompletionRatios mencocokkan current_stage lewat indexOf di
+// sini, dan stage yang tidak terdaftar mengembalikan -1 -- membuat scene
+// yang sedang di tahap PREVIEW terbaca belum mencapai GOLD dan ring progres
+// mundur sesaat tiap scene melewatinya.
+const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','GOLD_EXPORT','PREVIEW','FUSION','CLEANUP'];
 const TIER_ORDER = ['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'];
 const TIER_STAGE = { RAW: 'DOWNLOAD', BRONZE: 'CROP', SILVER: 'LEE_FILTER', GOLD: 'GOLD_EXPORT', FUSION: 'FUSION' };
 // Palet tier: lima hue kategorikal, divalidasi terhadap permukaan gelap
@@ -12,12 +17,27 @@ const TIER_COLORS = { RAW: '#9070E8', BRONZE: '#C4762E', SILVER: '#4A8CE0', GOLD
 // di panel itu -- tier di sana ditandai teks, bukan warna -- supaya satu hue
 // tidak pernah berarti dua hal dalam satu komponen.
 const SOURCE_COLORS = { sentinel1: '#5B8DEF', modis: '#2FA07E', gpm: '#C4762E' };
-const SOURCE_LABELS = { sentinel1: 'Sentinel-1', modis: 'MODIS', gpm: 'GPM', fusion: 'Fusion' };
+const SOURCE_LABELS = { sentinel1: 'Sentinel-1', modis: 'MODIS', gpm: 'GPM', fusion: 'Fusion', preview: 'Preview' };
+
+// Tier yang punya folder di disk, untuk rincian storage. Beda dari TIER_ORDER
+// di atas: itu rantai lineage yang bisa diminta user dan digambar di ring
+// progres, sementara PREVIEW adalah turunan (PNG hasil render dari GOLD) yang
+// tidak pernah ada di required_tiers tapi tetap memakan disk dan tetap harus
+// muncul di rincian. Urutannya mengikuti urutan eksekusi pipeline.
+const STORAGE_TIER_ORDER = ['RAW', 'BRONZE', 'SILVER', 'GOLD', 'PREVIEW', 'FUSION'];
+
+// Tier lintas-source: tidak bisa dipecah per sensor, jadi dikeluarkan dari
+// legenda source supaya tidak terbaca sebagai sensor keempat.
+const SOURCELESS_TIERS = ['fusion', 'preview'];
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
 const state = {
   datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null,
   openScenes: new Set(), openStructure: new Set(),
+  // Galeri preview per dataset: payload /api/datasets/{id}/preview, plus
+  // tanggal dan jenis yang sedang dipilih (bertahan saat panel digambar ulang
+  // oleh polling).
+  previews: {}, previewScene: {}, previewKind: {},
   // Lokasi: daftar dari /api/regions, filter pencarian, dan pilihan yang dipakai
   // "Buat Dataset". selectedRegionId adalah satu-satunya sumber kebenaran lokasi.
   regions: [], selectedRegionId: null, locationQuery: '',
@@ -637,6 +657,7 @@ document.addEventListener('keydown', (e) => {
 
 document.getElementById('addLocationIcon').innerHTML = ICONS.plus;
 document.getElementById('locSearchIcon').innerHTML = ICONS.search;
+document.getElementById('previewOptIcon').innerHTML = ICONS.image;
 loadRegions();
 
 document.getElementById('createForm').addEventListener('submit', async (e) => {
@@ -660,6 +681,9 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
     region_id: regionId, date_start: dateStart, date_end: dateEnd, tiers: tiers, name: name,
     description: document.getElementById('fDescription').value.trim() || null,
     quality_settings: Object.keys(qs).length ? qs : null,
+    // Field tersendiri, bukan bagian quality_settings: ini sakelar tahap
+    // pipeline, bukan ambang mutu data.
+    generate_preview: document.getElementById('fGeneratePreview').checked,
   };
   const submitBtn = document.getElementById('createSubmit');
   submitBtn.disabled = true; submitBtn.textContent = 'Membuat...';
@@ -668,6 +692,10 @@ document.getElementById('createForm').addEventListener('submit', async (e) => {
     showToast('Dataset dibuat (status: ' + result.status + ')', 'success');
     e.target.reset();
     document.querySelectorAll('.tier-check').forEach(c => c.checked = c.value === 'FUSION');
+    // reset() sudah mengembalikannya ke atribut `checked` di HTML; ditulis
+    // ulang di sini supaya default-nya tidak diam-diam berubah kalau markup-nya
+    // suatu saat diedit.
+    document.getElementById('fGeneratePreview').checked = true;
     clearRegionSelection();
     switchTab('datasets');
   } catch (err) {
@@ -992,19 +1020,190 @@ async function renderStructurePanel(box, id) {
   box.innerHTML =
     renderStorageBreakdown(id, storage) +
     renderQualityBySource(quality) +
-    '<div class="struct-files" id="structfiles-' + id + '"></div>';
+    '<div class="struct-files" id="structfiles-' + id + '"></div>' +
+    '<div class="preview-section" id="preview-' + id + '"></div>';
 
   box.querySelectorAll('[data-tier-files]').forEach(btn => {
     btn.addEventListener('click', () => loadTierFiles(id, btn.dataset.tierFiles));
   });
+
+  // Galeri di-fetch terpisah dan tidak di-await: rincian storage sudah bisa
+  // dibaca sementara daftar preview masih jalan, dan dataset yang tier
+  // preview-nya kosong tidak menahan apa pun.
+  renderPreviewGallery(id);
+}
+
+
+// ---------------------------------------------------------------------------
+// Galeri PREVIEW: PNG hasil render module10 dari tier GOLD, dua jenis
+// (grayscale untuk pembacaan ilmiah, colored untuk publikasi). Sumbernya
+// /api/datasets/{id}/preview, yang membaca sidecar JSON di disk -- jadi
+// keterangan colormap di UI ini persis yang ditulis modul yang me-render-nya,
+// bukan salinan kedua yang bisa menyimpang.
+// ---------------------------------------------------------------------------
+
+async function renderPreviewGallery(id) {
+  const box = document.getElementById('preview-' + id);
+  if (!box) return;
+
+  // Panel Struktur digambar ulang tiap polling dataset berjalan. Menggambar
+  // dulu dari cache membuat galeri tidak berkedip kosong tiap beberapa detik
+  // sementara fetch berikutnya jalan di belakang.
+  if (state.previews[id]) drawPreviewGallery(id);
+
+  let data;
+  try {
+    data = await api('/api/datasets/' + id + '/preview');
+  } catch (e) {
+    if (!state.previews[id]) box.innerHTML = '';
+    return;
+  }
+  if (!data.scenes || data.scenes.length === 0) {
+    delete state.previews[id];
+    box.innerHTML = renderPreviewEmpty(id);
+    return;
+  }
+
+  state.previews[id] = data;
+  const first = data.scenes[0].scene;
+  if (!state.previewScene[id] || !data.scenes.some(s => s.scene === state.previewScene[id])) {
+    state.previewScene[id] = first;
+  }
+  if (!state.previewKind[id]) state.previewKind[id] = 'colored';
+
+  drawPreviewGallery(id);
+}
+
+// Tiga alasan berbeda kenapa galeri bisa kosong, dan ketiganya butuh kalimat
+// berbeda -- "belum ada preview" saja membuat user menunggu sesuatu yang tidak
+// akan pernah datang kalau sebabnya checkbox yang dimatikan.
+function renderPreviewEmpty(id) {
+  const ds = state.datasets.find(d => d.dataset_id === id);
+  const reachesGold = ds && ds.required_tiers &&
+    (ds.required_tiers.includes('GOLD') || ds.required_tiers.includes('FUSION'));
+
+  let msg;
+  if (ds && ds.generate_preview === false) {
+    msg = 'Preview dimatikan untuk dataset ini. Centang "Buat Preview" saat membuat dataset ' +
+          'untuk menghasilkannya, atau jalankan ulang render lewat CLI ' +
+          'python -m etl.module10_generate_preview.';
+  } else if (!reachesGold) {
+    msg = 'Preview dirender dari tier GOLD, sementara dataset ini berhenti sebelum GOLD. ' +
+          'Pilih tier GOLD atau FUSION untuk mendapatkannya.';
+  } else {
+    msg = 'Belum ada preview untuk dataset ini. Preview dibuat otomatis setelah tahap ' +
+          'GOLD selesai; dataset yang dibuat sebelum fitur ini ada bisa dirender ulang ' +
+          'lewat CLI python -m etl.module10_generate_preview.';
+  }
+
+  return '<div class="struct-title preview-title">' +
+      '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
+    '</div>' +
+    '<div class="preview-empty">' + escapeHTML(msg) + '</div>';
+}
+
+function drawPreviewGallery(id) {
+  const box = document.getElementById('preview-' + id);
+  const data = state.previews[id];
+  if (!box || !data) return;
+
+  const sceneKey = state.previewScene[id];
+  const kind = state.previewKind[id];
+  const scene = data.scenes.find(s => s.scene === sceneKey) || data.scenes[0];
+  const block = scene.kinds[kind] || { images: [], info: {} };
+
+  const dateTabs = data.scenes.length > 1
+    ? '<div class="preview-dates">' + data.scenes.map(s =>
+        '<button class="preview-date' + (s.scene === scene.scene ? ' active' : '') + '"' +
+          ' data-preview-scene="' + escapeHTML(s.scene) + '">' + formatDateKey(s.scene) + '</button>'
+      ).join('') + '</div>'
+    : '<span class="preview-single-date">' + formatDateKey(scene.scene) + '</span>';
+
+  const kindTabs = '<div class="preview-kinds" role="tablist">' +
+    data.kinds.map(k =>
+      '<button class="preview-kind' + (k === kind ? ' active' : '') + '" role="tab"' +
+        ' aria-selected="' + (k === kind) + '" data-preview-kind="' + k + '">' +
+        (k === 'grayscale' ? 'Grayscale' : 'Berwarna') +
+        '<span class="preview-kind-count">' + ((scene.kinds[k] || {}).count || 0) + '</span>' +
+      '</button>').join('') +
+    '</div>';
+
+  const blurb = block.info.purpose
+    ? '<p class="preview-blurb">' + escapeHTML(block.info.purpose) + '</p>'
+    : '';
+
+  const cards = block.images.length === 0
+    ? '<div class="empty-small">Tidak ada gambar ' + escapeHTML(kind) + ' untuk tanggal ini</div>'
+    : '<div class="preview-grid">' + block.images.map(img => {
+        const range = Array.isArray(img.value_range)
+          ? img.value_range[0] + ' – ' + img.value_range[1] + (img.units ? ' ' + img.units : '')
+          : '';
+        return '<figure class="preview-card">' +
+            '<div class="preview-thumb">' +
+              // loading=lazy + decoding=async: satu dataset bisa punya belasan
+              // tanggal x 8 PNG, dan panel ini sering dibuka sekadar untuk
+              // melihat angka storage-nya.
+              '<img src="' + escapeHTML(img.url) + '" alt="' + escapeHTML(img.label || img.key) + '"' +
+                ' loading="lazy" decoding="async">' +
+            '</div>' +
+            '<figcaption>' +
+              '<span class="preview-label">' + escapeHTML(img.label || img.key) + '</span>' +
+              '<span class="preview-tags">' +
+                (img.colormap ? '<span class="preview-tag">' + escapeHTML(img.colormap) + '</span>' : '') +
+                (range ? '<span class="preview-tag mono">' + escapeHTML(range) + '</span>' : '') +
+              '</span>' +
+              (img.interpretation
+                ? '<span class="preview-note" title="' + escapeHTML(img.interpretation) + '">' +
+                    escapeHTML(img.interpretation) + '</span>' : '') +
+            '</figcaption>' +
+          '</figure>';
+      }).join('') + '</div>';
+
+  // Lapisan yang tidak sempat dirender (mis. MODIS/GPM gagal diunduh) tetap
+  // disebut: galeri yang diam-diam kekurangan lima gambar akan terbaca
+  // sebagai "cuma segini yang ada", bukan "ada yang gagal".
+  const missing = (scene.skipped || []).length > 0
+    ? '<p class="preview-missing">' + scene.skipped.length + ' lapisan tidak dirender: ' +
+        escapeHTML(scene.skipped.map(s => s.key).join(', ')) + '</p>'
+    : '';
+
+  box.innerHTML =
+    '<div class="struct-title preview-title">' +
+      '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
+      '<span class="preview-size">' + humanBytes(data.total_size_bytes) + '</span>' +
+    '</div>' +
+    '<div class="preview-bar">' + dateTabs + kindTabs + '</div>' +
+    blurb + cards + missing;
+
+  box.querySelectorAll('[data-preview-scene]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.previewScene[id] = btn.dataset.previewScene;
+      drawPreviewGallery(id);
+    });
+  });
+  box.querySelectorAll('[data-preview-kind]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.previewKind[id] = btn.dataset.previewKind;
+      drawPreviewGallery(id);
+    });
+  });
+}
+
+function formatDateKey(key) {
+  // "20260712" -> "12 Jul 2026". Kunci scene preview selalu YYYYMMDD; kalau
+  // suatu saat bukan, tampilkan apa adanya daripada mengarang tanggal.
+  if (!/^\d{8}$/.test(key)) return escapeHTML(key);
+  const d = new Date(key.slice(0, 4) + '-' + key.slice(4, 6) + '-' + key.slice(6, 8) + 'T00:00:00Z');
+  if (isNaN(d)) return escapeHTML(key);
+  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 function renderStorageBreakdown(id, storage) {
-  const tiers = TIER_ORDER.map(t => [t, storage.tiers[t.toLowerCase()]]).filter(([, v]) => v && v.file_count > 0);
+  const tiers = STORAGE_TIER_ORDER.map(t => [t, storage.tiers[t.toLowerCase()]]).filter(([, v]) => v && v.file_count > 0);
   if (tiers.length === 0) return '<div class="empty-small">Belum ada berkas di disk</div>';
 
   const maxBytes = Math.max.apply(null, tiers.map(([, v]) => v.size_bytes));
-  const usedSources = Object.keys(storage.sources).filter(s => s !== 'fusion');
+  const usedSources = Object.keys(storage.sources).filter(s => !SOURCELESS_TIERS.includes(s));
 
   const legend = usedSources.length > 1
     ? '<div class="struct-legend">' + usedSources.map(src =>
@@ -1020,8 +1219,8 @@ function renderStorageBreakdown(id, storage) {
     const widthPct = maxBytes > 0 ? (info.size_bytes / maxBytes) * 100 : 0;
     const entries = Object.entries(info.sources);
 
-    // Tier fusion tidak punya pecahan source -- isinya justru gabungan
-    // ketiganya, jadi digambar sebagai satu batang netral.
+    // Tier fusion dan preview tidak punya pecahan source -- isinya justru
+    // gabungan ketiganya, jadi digambar sebagai satu batang netral.
     const segments = entries.length > 0
       ? entries.map(([src, v]) => {
           const share = info.size_bytes > 0 ? (v.size_bytes / info.size_bytes) * 100 : 0;

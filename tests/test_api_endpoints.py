@@ -377,22 +377,71 @@ class TestSourceFiltering:
         assert resp.status_code == 400
 
 
+class TestGeneratePreviewFlag:
+    """datasets.generate_preview: opt-out tahap PREVIEW per dataset."""
+
+    def test_defaults_to_true_when_omitted(self, api_client, sample_dataset):
+        """Pemanggil lama tidak mengirim field ini; perilakunya harus tetap
+        seperti sebelum flag ada, yaitu PREVIEW ikut jalan."""
+        resp = api_client.get(f"/api/datasets/{sample_dataset}")
+        assert resp.status_code == 200
+        assert resp.json()["generate_preview"] is True
+
+    def test_flag_is_exposed_in_list_view(self, api_client, sample_dataset):
+        """Kartu dataset butuh flag ini tanpa harus mengambil detail, supaya
+        galeri kosong bisa membedakan 'dimatikan' dari 'belum dibuat'."""
+        resp = api_client.get("/api/datasets")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert items and all("generate_preview" in it for it in items)
+
+    def test_create_request_accepts_false(self, sample_region):
+        from api.schemas import DatasetCreateRequest
+
+        req = DatasetCreateRequest(
+            region_id=sample_region, date_start="2024-01-01", date_end="2024-01-31",
+            tiers=["GOLD"], name="no preview", generate_preview=False,
+        )
+        assert req.generate_preview is False
+
+    def test_preview_not_a_requestable_tier(self, sample_region):
+        """PREVIEW turunan, bukan tier lineage: memintanya lewat `tiers` harus
+        ditolak, bukan diam-diam diterima lalu dihapus tier cleanup."""
+        import pytest as _pytest
+        from api.schemas import DatasetCreateRequest
+
+        with _pytest.raises(ValueError):
+            DatasetCreateRequest(
+                region_id=sample_region, date_start="2024-01-01", date_end="2024-01-31",
+                tiers=["PREVIEW"], name="bad",
+            )
+
+
 class TestDatasetStorageEndpoints:
 
     def test_storage_summary_shape(self, api_client, sample_dataset):
         resp = api_client.get(f"/api/datasets/{sample_dataset}/storage/summary")
         assert resp.status_code == 200
         body = resp.json()
-        # Kelima tier selalu dilaporkan walau kosong, supaya konsumen tidak
-        # perlu membedakan "tier tidak ada" dari "tier kosong".
-        assert set(body["tiers"]) == {"raw", "bronze", "silver", "gold", "fusion"}
+        # Semua tier selalu dilaporkan walau kosong, supaya konsumen tidak
+        # perlu membedakan "tier tidak ada" dari "tier kosong". preview ikut
+        # di sini walau bukan tier lineage: dia tetap memakan disk.
+        assert set(body["tiers"]) == {"raw", "bronze", "silver", "gold", "preview", "fusion"}
         assert body["tiers"]["fusion"]["sources"] == {}
+        assert body["tiers"]["preview"]["sources"] == {}
         assert body["total_size_bytes"] == 0
 
     def test_storage_files_rejects_source_on_fusion_tier(self, api_client, sample_dataset):
         """Tier fusion gabungan semua source, jadi ?source= di sana keliru."""
         resp = api_client.get(
             f"/api/datasets/{sample_dataset}/storage/files/fusion?source=modis"
+        )
+        assert resp.status_code == 400
+
+    def test_storage_files_rejects_source_on_preview_tier(self, api_client, sample_dataset):
+        """Sama seperti fusion, preview lintas-source: ?source= keliru di sana."""
+        resp = api_client.get(
+            f"/api/datasets/{sample_dataset}/storage/files/preview?source=modis"
         )
         assert resp.status_code == 400
 

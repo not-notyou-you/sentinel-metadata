@@ -24,4 +24,13 @@ const ICONS = {
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11z"/>' +
     '<circle cx="12" cy="10" r="2.5"/></svg>',
+
+  // Galeri preview: bingkai citra dengan garis horizon + matahari, dipakai di
+  // judul bagian Preview pada panel Struktur.
+  image:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
+    '<circle cx="8.5" cy="9.5" r="1.5"/>' +
+    '<path d="M21 15l-5-4-4.5 5L9 14l-6 5"/></svg>',
 };

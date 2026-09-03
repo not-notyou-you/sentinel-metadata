@@ -1,9 +1,11 @@
 # api/routes/datasets.py
 from __future__ import annotations
+import json
 import logging
 import os
 import tempfile
 import zipfile
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -61,6 +63,7 @@ async def create_dataset(
             name=req.name,
             description=req.description,
             quality_settings=req.quality_settings.model_dump() if req.quality_settings else None,
+            generate_preview=req.generate_preview,
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc))
@@ -269,6 +272,156 @@ async def get_dataset_metadata(dataset_id: int, db: DatabaseClient = Depends(get
     return metadata
 
 
+# ---------------------------------------------------------------------------
+# Tier PREVIEW
+# ---------------------------------------------------------------------------
+# Isi tier ini dibaca langsung dari disk, bukan dari data_products. PNG preview
+# sengaja tidak didaftarkan sebagai produk data (lihat migrasi 015): dia
+# turunan murni yang bisa dibangun ulang dari gold/, dan sidecar JSON yang
+# ditulis module10 sudah memuat seluruh keterangan yang dibutuhkan UI. Menaruh
+# 8+ baris per scene di data_products cuma untuk itu akan menambah beban tulis
+# tanpa ada yang membacanya.
+
+
+def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
+    """Rakit satu entri scene preview: isi preview_metadata.json ditambah URL
+    gambar yang siap dipakai <img src>."""
+    scene_dir = fm.get_preview_dir(dataset_id, name, scene)
+    base_url = f"/api/datasets/{dataset_id}/preview/{scene}"
+
+    def _read(path: Path) -> dict | None:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            # Sidecar hilang/rusak tidak boleh menjatuhkan seluruh listing:
+            # PNG-nya sendiri masih ada dan masih berguna ditampilkan.
+            return None
+
+    metadata = _read(scene_dir / "preview_metadata.json") or {}
+    kinds: dict[str, dict] = {}
+    for kind in fm.PREVIEW_KINDS:
+        kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind)
+        if not kind_dir.is_dir():
+            continue
+        info = _read(kind_dir / f"{kind}_info.json") or {}
+        images = []
+        for entry in info.get("images", []):
+            filename = entry.get("file")
+            if not filename or not (kind_dir / filename).exists():
+                continue
+            images.append({**entry, "url": f"{base_url}/{kind}/{filename}"})
+        # Cadangan kalau sidecar tidak terbaca: listing PNG apa adanya, supaya
+        # galeri tetap terisi walau tanpa keterangan.
+        if not images:
+            images = [
+                {"key": f.stem, "file": f.name, "label": f.stem,
+                 "url": f"{base_url}/{kind}/{f.name}",
+                 "size_bytes": f.stat().st_size}
+                for f in sorted(kind_dir.glob("*.png"))
+            ]
+        kinds[kind] = {
+            "count": len(images),
+            "info": {k: v for k, v in info.items() if k != "images"},
+            "images": images,
+        }
+
+    files = fm.get_preview_scene_files(dataset_id, name, scene)
+    return {
+        "scene": scene,
+        "acquisition_date": metadata.get("acquisition_date", scene),
+        "s1_scene_key": metadata.get("s1_scene_key"),
+        "generated_at": metadata.get("generated_at"),
+        "sources_present": metadata.get("sources_present", []),
+        "skipped": metadata.get("skipped", []),
+        "usage": metadata.get("usage", {}),
+        "size_bytes": sum(f.stat().st_size for f in files),
+        "kinds": kinds,
+    }
+
+
+@router.get(
+    "/{dataset_id}/preview",
+    summary="Galeri preview dataset (grayscale + colored per tanggal)",
+)
+async def list_dataset_previews(
+    dataset_id: int,
+    scene: str | None = Query(None, description="Batasi ke satu tanggal (YYYYMMDD)"),
+    db: DatabaseClient = Depends(get_db),
+) -> dict:
+    """
+    Daftar PNG preview yang ada di disk untuk dataset ini, dikelompokkan per
+    tanggal akuisisi lalu per jenis (grayscale / colored), lengkap dengan
+    keterangan colormap dan interpretasinya dari sidecar JSON.
+
+    Selalu 200 walau tier preview kosong: dataset lama (dan dataset yang
+    berhenti sebelum GOLD) memang tidak punya preview, dan itu kondisi normal
+    yang perlu dibedakan UI dari error.
+    """
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    name = info["name"]
+    available = fm.list_preview_scenes(dataset_id, name)
+    if scene is not None:
+        if scene not in available:
+            raise HTTPException(404, f"Tidak ada preview untuk tanggal {scene}")
+        available = [scene]
+
+    scenes = [_preview_scene_payload(dataset_id, name, sc) for sc in available]
+    return {
+        "dataset_id": dataset_id,
+        "tier": "preview",
+        "kinds": list(fm.PREVIEW_KINDS),
+        "scene_count": len(scenes),
+        "total_size_bytes": sum(sc["size_bytes"] for sc in scenes),
+        "scenes": scenes,
+    }
+
+
+@router.get(
+    "/{dataset_id}/preview/{scene}/{kind}/{filename}",
+    response_class=FileResponse,
+    summary="Satu berkas PNG preview",
+)
+async def get_preview_image(
+    dataset_id: int,
+    scene: str,
+    kind: str,
+    filename: str,
+    db: DatabaseClient = Depends(get_db),
+) -> FileResponse:
+    """Kirim satu PNG dari preview/{scene}/{kind}/.
+
+    Ketiga komponen path divalidasi ketat lalu hasilnya dicek harus benar-benar
+    berada di dalam folder kind: `filename` datang dari URL, jadi tanpa
+    pemeriksaan itu ".." di dalamnya bisa membaca berkas mana pun yang bisa
+    dijangkau proses ini.
+    """
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    if kind not in fm.PREVIEW_KINDS:
+        raise HTTPException(400, f"Jenis preview tidak valid: {kind}. Valid: {list(fm.PREVIEW_KINDS)}")
+    if not filename.endswith(".png") or Path(filename).name != filename:
+        raise HTTPException(400, "Nama berkas preview harus satu nama .png tanpa path")
+
+    kind_dir = fm.get_preview_kind_dir(dataset_id, info["name"], scene, kind).resolve()
+    path = (kind_dir / filename).resolve()
+    if not path.is_relative_to(kind_dir) or not path.is_file():
+        raise HTTPException(404, f"Preview tidak ditemukan: {scene}/{kind}/{filename}")
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        # Preview di-render ulang tiap job jalan lagi, tapi selalu untuk
+        # tanggal yang isinya sudah final -- aman di-cache lama di browser.
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @router.get(
     "/{dataset_id}/storage/summary",
     response_model=DatasetStorageSummary,
@@ -346,10 +499,12 @@ async def list_dataset_tier_files(
         )
 
     if not fm.sources_for_tier(tier_l):
-        # Tier fusion: langsung scene, tanpa level source.
-        scenes = [scene] if scene else fm.list_fusion_scenes(dataset_id, name)
+        # Tier fusion/preview: langsung scene, tanpa level source.
+        scenes = [scene] if scene else fm.list_sourceless_scenes(dataset_id, name, tier_l)
         for sc in scenes:
-            result.append(_entry(sc, None, fm.get_fusion_scene_files(dataset_id, name, sc)))
+            result.append(
+                _entry(sc, None, fm.get_sourceless_scene_files(dataset_id, name, tier_l, sc))
+            )
     else:
         sources = [source_l] if source_l else fm.list_sources(dataset_id, name, tier_l)
         for src in sources:

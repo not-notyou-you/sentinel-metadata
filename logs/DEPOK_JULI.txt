@@ -544,3 +544,6 @@ RuntimeError: semua produk GPM gagal untuk dataset_id=46 tanggal=2026-07-12 ([{'
 2026-09-01 14:15:06,991 INFO    [Thread-47 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='DEPOK_JULI' -> logs\DEPOK_JULI.txt
 2026-09-01 14:15:06,991 INFO    [Thread-47 (_runner)] etl.module5_orchestrator [ORCH] job_id=9 start dataset='DEPOK_JULI' scenes=3 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\DEPOK_JULI.txt
 2026-09-01 14:15:06,993 INFO    [Thread-47 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='DEPOK_JULI'
+2026-09-03 08:08:46,031 INFO    [Thread-1 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='DEPOK_JULI' -> logs\DEPOK_JULI.txt
+2026-09-03 08:08:46,031 INFO    [Thread-1 (_runner)] etl.module5_orchestrator [ORCH] job_id=9 start dataset='DEPOK_JULI' scenes=3 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\DEPOK_JULI.txt
+2026-09-03 08:08:46,031 INFO    [Thread-1 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='DEPOK_JULI'

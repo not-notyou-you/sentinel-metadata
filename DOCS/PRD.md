@@ -42,6 +42,67 @@
 | **BRONZE** | Calibration validation | Verify atmospheric correction | low | 45–50 MB/scene |
 | **SILVER** | Preprocessing pipelines | Train speckle-robust models | low | 45–50 MB/scene |
 | **GOLD** | Production ML inference | Deploy flood detection classifier | low | 40–45 MB/scene |
+| **PREVIEW** | Humans, not models | Figures, QA-by-eye, dataset browsing | low | 9–30 MB/date |
+| **FUSION** | Multi-modal deep learning | Train on S1 + MODIS + GPM stacks | low | 12–15 MB/date |
+
+### PREVIEW Tier Specifications (Visual Products — Not for Analysis)
+
+PNG renders of the GOLD COGs for one acquisition date, written to
+`data/datasets/{id}_{slug}/preview/{YYYYMMDD}/`. Produced by
+`etl/module10_generate_preview.py`, which runs **after GOLD_EXPORT and before
+FUSION** — a dataset that only requested FUSION deletes `gold/` at cleanup, so
+that is the only window in which every source raster still exists.
+
+**Two variants, two audiences:**
+
+| | `grayscale/` | `colored/` |
+|--|--------------|------------|
+| Purpose | Scientific reading of a single file | Publication, presentation, cross-date comparison |
+| PNG mode | LA (luminance + alpha) | RGBA |
+| Value range | Percentile 2–98, recomputed **per file** | Per source; MODIS/GPM pinned to fixed ranges |
+| Comparable across dates | **No** — the scale moves with the file | Yes, for MODIS and GPM |
+
+**Layers** (one `{key}.png` in each subfolder):
+
+| key | Source | Band | `colored/` colormap | Range | Reading |
+|-----|--------|------|---------------------|-------|---------|
+| `s1_vv` | Sentinel-1 | VV | viridis | percentile 2–98 (dB) | dark = smooth surface (calm water, asphalt, flooded paddy) |
+| `s1_vh` | Sentinel-1 | VH | viridis | percentile 2–98 (dB) | volume scattering; sharper water/land contrast than VV |
+| `modis_ndvi` | MODIS | NDVI | RdYlGn | fixed −1..1 | red = water/bare, green = dense canopy |
+| `modis_ndwi` | MODIS | NDWI | BrBG | fixed −1..1 | brown = dry land, blue-green = open water |
+| `gpm_rain_24h` | GPM | RAIN_24H | YlGnBu | 0..p98 | immediate flash-flood trigger |
+| `gpm_rain_72h` | GPM | RAIN_72H | YlGnBu | 0..p98 | multi-day soil saturation |
+| `gpm_rain_7d` | GPM | RAIN_7D | YlGnBu | 0..p98 | antecedent moisture proxy |
+
+Plus `colored/s1_rgb_composite.png` — false colour with R = VV, G = VH,
+B = VV−VH (dB). Open water reads dark/blue, vegetation green, built-up areas
+pink to white; useful for separating standing water from topographic shadow,
+which look identical in any single band.
+
+**Conventions**
+
+- Max width 1024 px (aspect preserved), PNG compression level 6.
+- NoData is **transparent** (`alpha=0`), never black — black is a legitimate
+  value for low backscatter, so mapping NoData to black would erase the
+  difference between "water" and "no data".
+- Sentinel-1 is converted to decibels (`10*log10`) before stretching, because
+  GOLD stores **linear** sigma0 whose distribution is extremely right-skewed.
+  Auto-detected: data already in dB is left alone.
+- Missing layers (e.g. a failed MODIS download) are skipped and listed under
+  `skipped` in `preview_metadata.json`, never fatal.
+
+**Not for quantitative analysis.** Colours are quantised to 8 bits and ranges
+are clipped. Use `gold/*.tif` or `fusion/*.h5` for measurements.
+
+PREVIEW is a *derived* tier: it is not in the RAW→FUSION lineage, is not
+registered in `data_products`, and is never removed by tier auto-deletion.
+
+**Opting out.** `datasets.generate_preview` (BOOLEAN NOT NULL DEFAULT TRUE,
+migration 016) turns the stage off per dataset — surfaced as the "Buat Preview
+(Grayscale + Berwarna)" checkbox on the create form, ticked by default. It is
+sent as a top-level `generate_preview` field on `POST /api/datasets`, not
+inside `quality_settings`, which holds data-quality thresholds rather than
+pipeline switches. Disabling previews does not affect FUSION.
 
 ### GOLD Tier Specifications (Recommended for Training & Inference)
 
@@ -317,13 +378,21 @@ client.trigger_backfill(
 
 Based on user's `required_tiers` selection:
 
-| Scenario | RAW | BRONZE | SILVER | GOLD |
-|----------|-----|--------|--------|------|
-| User requests only GOLD | ✗ deleted | ✗ deleted | ✗ deleted | ✓ kept |
-| User requests SILVER + GOLD | ✗ deleted | ✗ deleted | ✓ kept | ✓ kept |
-| User requests all (research) | ✓ kept | ✓ kept | ✓ kept | ✓ kept |
+| Scenario | RAW | BRONZE | SILVER | GOLD | PREVIEW |
+|----------|-----|--------|--------|------|---------|
+| User requests only GOLD | ✗ deleted | ✗ deleted | ✗ deleted | ✓ kept | ✓ kept |
+| User requests only FUSION | ✗ deleted | ✗ deleted | ✗ deleted | ✗ deleted | ✓ kept |
+| User requests SILVER + GOLD | ✗ deleted | ✗ deleted | ✓ kept | ✓ kept | ✓ kept |
+| User requests all (research) | ✓ kept | ✓ kept | ✓ kept | ✓ kept | ✓ kept |
 
-**Cleanup timing**: Immediately after COG_EXPORT succeeds (not QUALITY_ANALYTICS).
+PREVIEW is never auto-deleted: it is not in `TIER_ORDER`, so
+`compute_tiers_to_delete` never sees it. That is deliberate — on a FUSION-only
+dataset `gold/` is gone, so the PNGs cannot be rebuilt and are the only visual
+record left. Delete them explicitly with
+`POST /api/storage/cleanup {"tier": "preview"}` if the disk cost matters.
+
+**Cleanup timing**: after the whole per-scene pipeline finishes (GOLD_EXPORT →
+PREVIEW → FUSION), so every stage still sees the tiers it reads.
 
 ### Cost Example (1 year, 365 scenes)
 

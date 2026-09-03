@@ -73,6 +73,15 @@ Arsitektur berbasis database PostgreSQL dengan GIS, memungkinkan data lineage tr
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
+│  MODULE 10: PREVIEW RENDERING                              │
+│  • Render GOLD COGs to PNG (grayscale + colored)           │
+│  • Percentile 2-98 stretch; per-source colormaps           │
+│  • Runs BEFORE fusion, while gold/ still exists on disk    │
+│  • Output: PREVIEW tier (~9-30 MB per acquisition date)    │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
 │  MODULE 9: DATA FUSION (optional)                          │
 │  • Align Sentinel-1, MODIS, GPM by date/location          │
 │  • Create multi-modal feature stacks (HDF5)                │
@@ -137,6 +146,16 @@ data/
         │   └── {scene_slug}/
         │       ├── S1A_..._VV_crop.tif (after CROP)
         │       └── S1A_..._VH_crop.tif
+        │
+        ├── preview/                  # tier turunan: PNG hasil render dari gold/
+        │   └── {YYYYMMDD}/
+        │       ├── preview_metadata.json
+        │       ├── grayscale/        # stretch persentil 2-98, tanpa hue
+        │       │   ├── s1_vv.png, s1_vh.png, modis_ndvi.png, ...
+        │       │   └── grayscale_info.json
+        │       └── colored/          # colormap per-source + komposit RGB
+        │           ├── s1_rgb_composite.png, gpm_rain_24h.png, ...
+        │           └── colored_info.json
         │
         ├── silver/
         │   └── {scene_slug}/

@@ -122,6 +122,33 @@ Users define a new satellite data acquisition job by specifying location, date r
 - Clicking "Semua" → toggle all 4 tiers in unison
 - Unchecking individual tier → auto-uncheck "Semua"
 
+#### 4b. Opsi Pipeline — Buat Preview
+
+Directly below the tier pills, above the name field:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ [x] ▣  Buat Preview (Grayscale + Berwarna)               │
+│        Menghasilkan PNG dari tier GOLD untuk publikasi    │
+│        dan pembacaan ilmiah. Matikan untuk mempercepat.   │
+└──────────────────────────────────────────────────────────┘
+```
+
+- Element: `<label class="option-row" for="fGeneratePreview">` with
+  `<input type="checkbox" id="fGeneratePreview" checked>` and `ICONS.image`.
+- **Checked by default** — previews are cheap and useful for research, so this
+  is opt-out rather than opt-in.
+- Submitted as a top-level `generate_preview` boolean on `POST /api/datasets`,
+  *not* inside `quality_settings` (that bag is for data-quality thresholds).
+- Deliberately **not** a sixth `.tier-pill`: PREVIEW is not a lineage tier that
+  can be requested via `required_tiers`, so rendering it alongside RAW..FUSION
+  would imply it obeys the same retention rules. `.option-row` is a separate
+  control style with room for the one-line consequence ("slower vs. figures for
+  publication") to be read *before* ticking rather than after.
+- `.option-row:has(input:checked)` tints the whole card cyan, so the active
+  state is legible from the card rather than just the 13px checkbox. Browsers
+  without `:has()` still get a fully working control, just without the tint.
+
 #### 5. Metadata (Name & Description)
 
 - **Nama dataset** (required text): "dataset nov ke feb", "Flood Detection 2024", etc.
@@ -289,6 +316,9 @@ Example:
 - **All statuses**:
   - `[Hapus]` button (danger red) → `openDeleteModal(id)`
   - `[Detail]` button (ghost) → toggle scene table visibility below
+  - `[Struktur]` button (ghost, only when `total_size_bytes > 0`) → toggle the
+    Struktur panel (storage per tier, quality per source, and the PREVIEW
+    gallery) below
 
 #### Delete Confirmation Modal
 
@@ -340,6 +370,84 @@ Example:
 - `last_error` (monospace, gray, small font)
 
 **Polling**: Dataset list refreshes every 3 seconds if any dataset is `ACTIVE_STATUSES` (QUEUED, PREPARING, DOWNLOADING, PROCESSING).
+
+#### Struktur Panel (Expandable)
+
+**On "Struktur" button click**, renders below the card, in order:
+
+1. **Storage per tier & source** — one bar per tier, segmented by source.
+   Iterates `STORAGE_TIER_ORDER` (`RAW, BRONZE, SILVER, GOLD, PREVIEW, FUSION`),
+   which is deliberately *not* `TIER_ORDER`: the latter is the lineage chain the
+   user can request and the progress ring draws, while PREVIEW is a derived tier
+   that never appears in `required_tiers` but still occupies disk. `fusion` and
+   `preview` have no per-source split and draw as one neutral hatched bar.
+2. **Kualitas per source**
+3. **File list** for whichever tier's `[Berkas]` link was clicked
+4. **PREVIEW gallery** (below)
+
+#### PREVIEW Gallery
+
+Source: `GET /api/datasets/{id}/preview`, which reads the sidecar JSON that
+`module10_generate_preview.py` wrote next to the PNGs — so the colormap and
+interpretation text in the UI is the same text the renderer emitted, not a
+second copy that can drift.
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│ ▣ PREVIEW                                                 9.0 MB  │
+│ 12 Jul 2026            [ Grayscale (2) ] [ Berwarna (3) ]         │
+│ Publikasi dan presentasi — warna yang bisa dibaca lintas tanggal. │
+│ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐                │
+│ │              │ │              │ │              │                │
+│ │   (image)    │ │   (image)    │ │   (image)    │                │
+│ │              │ │              │ │              │                │
+│ ├──────────────┤ ├──────────────┤ ├──────────────┤                │
+│ │Sentinel-1 VV │ │Sentinel-1 VH │ │S1 Komposit   │                │
+│ │[viridis]     │ │[viridis]     │ │[false-color] │                │
+│ │[-11.1 – 0.8] │ │[-17.0 – -7.1]│ │              │                │
+│ │Backscatter…  │ │Backscatter…  │ │False color…  │                │
+│ └──────────────┘ └──────────────┘ └──────────────┘                │
+│ 5 lapisan tidak dirender: modis_ndvi, modis_ndwi, gpm_rain_24h…   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+**Controls**
+
+- **Date tabs** (`.preview-date`) — one per acquisition date that has previews.
+  Hidden when there is only one date; a plain label is shown instead.
+- **Kind tabs** (`.preview-kind`, `role="tablist"`) — `Grayscale` / `Berwarna`,
+  each with a count badge. Default is `Berwarna`.
+- Both selections live in `state.previewScene[id]` / `state.previewKind[id]`, so
+  they survive the 3-second polling re-render.
+
+**Cards** (`.preview-grid` → `auto-fill, minmax(190px, 1fr)`)
+
+- `<img loading="lazy" decoding="async">` — one dataset can hold dozens of dates
+  × 8 PNGs, and the panel is often opened just to read the storage numbers.
+- Thumbnails sit on a **checkerboard** background: preview PNGs are transparent
+  where the source was NoData, and on a flat backdrop an empty area is
+  indistinguishable from dark data.
+- Caption: label, colormap chip, value-range chip (monospace), and the
+  interpretation text clamped to 3 lines (full text in `title`).
+- Layers that could not be rendered are named explicitly in amber. A gallery
+  that silently shows 3 of 8 images reads as "that's all there is" rather than
+  "something failed".
+
+**Empty state**: `renderPreviewEmpty(id)` explains *why* the gallery is empty,
+because the three reasons need different sentences — "no previews yet" would
+leave a user waiting for something that is never coming:
+
+| Condition | Message |
+|-----------|---------|
+| `dataset.generate_preview === false` | Preview disabled for this dataset; tick "Buat Preview" when creating one, or re-render via the CLI |
+| `required_tiers` reaches neither GOLD nor FUSION | Previews render from GOLD; this dataset stops earlier |
+| Otherwise | Not generated yet — created automatically after GOLD; older datasets can be re-rendered via the CLI |
+
+This is why `generate_preview` is exposed on `DatasetItem` (the list payload)
+and not only on `DatasetDetail`: the card list never fetches detail.
+
+**Icons**: `ICONS.image` (inline SVG, `stroke: currentColor`). No emoji, per the
+design system.
 
 ---
 
@@ -690,10 +798,10 @@ All colors as CSS vars for easy theme swapping (if needed in future).
 ```
 web/
 ├── index.html              (Main dashboard + form)
-├── Sentinel1Dashboard.html (Monitoring view)
-├── Storage_Manager.html    (Future: storage cleanup UI)
-├── icons.js                (Icon SVG library)
-└── style (inline in HTML)  (CSS scoped to page)
+├── app.js                  (All view logic: create, datasets, struktur, preview gallery, live)
+├── icons.js                (Icon SVG library: trash, plus, search, pin, image)
+├── style.css               (Full stylesheet, incl. .preview-* gallery rules)
+└── logo.webp
 ```
 
 ---
@@ -716,6 +824,9 @@ web/
 - Download individual scenes (not just full dataset)
 - Scene comparison tool (diff two scenes)
 - Admin panel for tier retention policies
+- Lightbox / full-size view for preview images (currently capped at 1024 px wide)
+- Side-by-side grayscale vs colored comparison instead of tab switching
+- Preview date scrubber for datasets with many acquisition dates
 
 ---
 

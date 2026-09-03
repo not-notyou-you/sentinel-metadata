@@ -32,10 +32,14 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-StorageTier = Literal["raw", "bronze", "silver", "gold", "fusion", "partial", "all"]
+StorageTier = Literal["raw", "bronze", "silver", "gold", "preview", "fusion", "partial", "all"]
 
 # Tier yang dianggap turunan dan aman dihapus massal lewat tier="all".
-# gold + fusion adalah deliverable akhir, jadi tidak ikut.
+# gold + fusion adalah deliverable akhir, jadi tidak ikut. preview juga tidak
+# ikut walau isinya turunan: PNG-nya cuma bisa dibangun ulang selama gold/
+# masih ada, dan pada dataset yang cuma meminta FUSION gold/ sudah dihapus --
+# jadi menghapus preview di sana berarti menghilangkannya untuk selamanya.
+# Hapus tier ini secara eksplisit dengan tier="preview" kalau memang diinginkan.
 _DERIVED_TIERS: tuple[str, ...] = ("raw", "bronze", "silver")
 
 

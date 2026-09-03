@@ -20,16 +20,22 @@
 
 ## Overview
 
-A complete, standardized ETL data pipeline for Sentinel-1 SAR satellite imagery, purpose-built for flood detection research in the Jabodetabek region. The system implements a **Lakehouse architecture** (RAW → BRONZE → SILVER → GOLD) with full metadata tracking, data lineage, and quality assurance.
+A complete, standardized ETL data pipeline for Sentinel-1 SAR satellite imagery, purpose-built for flood detection research in the Jabodetabek region. The system implements a **Lakehouse architecture** (RAW → BRONZE → SILVER → GOLD → PREVIEW → FUSION) with full metadata tracking, data lineage, and quality assurance.
 
 ```
-Sentinel-1 SAR  ──[M1: Download]──► RAW
-                ──[M2: Crop]──────► BRONZE  (Jabodetabek bbox)
-                ──[M3: Lee Filter]► SILVER  (speckle reduced)
-                ──[M4: COG Export]► GOLD    (production-ready)
-                ──[M6: Analytics]──► Quality metrics + reports
-                ──[M5: Orchestrate]► PostgreSQL checkpoints + retry
+Sentinel-1 SAR  ──[M1:  Download]───► RAW
+                ──[M2:  Crop]───────► BRONZE   (Jabodetabek bbox)
+                ──[M3:  Lee Filter]─► SILVER   (speckle reduced)
+                ──[M4:  Gold Export]► GOLD     (analysis-ready COG, per source)
+                ──[M10: Preview]────► PREVIEW  (PNG grayscale + colored)
+                ──[M9:  Fusion]─────► FUSION   (multi-modal HDF5 stack)
+                ──[M6:  Analytics]──► Quality metrics + reports
+                ──[M5:  Orchestrate]► PostgreSQL checkpoints + retry
 ```
+
+MODIS and GPM enter at SILVER (daily products) and follow the same
+GOLD → PREVIEW → FUSION path. See
+[`STORAGE_STRUCTURE.md`](STORAGE_STRUCTURE.md) for the on-disk layout.
 
 ---
 
@@ -60,9 +66,13 @@ sentinel1-flood-detection/
 │   ├── module1_download.py       # Sentinel-1 discovery & recovery
 │   ├── module2_crop.py           # Spatial subsetting to AOI bbox
 │   ├── module3_lee_filter.py     # SAR speckle reduction (Lee adaptive filter)
-│   ├── module4_cog_export.py     # Cloud-Optimized GeoTIFF export
+│   ├── module4_gold_export.py    # Per-source Cloud-Optimized GeoTIFF export  ✅
 │   ├── module5_orchestrator.py   # Pipeline orchestration + DB checkpoints    ✅
 │   ├── module6_analytics.py      # Quality metrics & visualization
+│   ├── module7_modis_download.py # MODIS flood / NDVI / NDWI daily products   ✅
+│   ├── module8_gpm_download.py   # GPM rainfall accumulation windows          ✅
+│   ├── module9_fusion.py         # Multi-modal HDF5 feature stack (FUSION)    ✅
+│   ├── module10_generate_preview.py # PNG previews from GOLD (PREVIEW tier)   ✅
 │   └── seed_data.py              # Synthetic test data generator              ✅
 │
 ├── api/
@@ -179,6 +189,9 @@ pytest tests/ -v --cov=etl --cov=api --cov-report=term-missing
 | `GET` | `/api/quality/{scene_id}` | Quality metrics per band |
 | `GET` | `/api/quality/summary/stats` | Aggregated quality statistics |
 | `GET` | `/api/metadata/lineage/{product_id}` | Transformation provenance chain |
+| `GET` | `/api/datasets/{id}/preview` | PREVIEW gallery: grayscale + colored PNGs per date, with colormap and interpretation metadata |
+| `GET` | `/api/datasets/{id}/preview/{scene}/{kind}/{file}` | One preview PNG (`kind` = `grayscale` \| `colored`) |
+| `GET` | `/api/datasets/{id}/storage/summary` | Disk usage per tier and per source |
 
 Interactive docs: **http://localhost:8000/docs**
 
@@ -208,14 +221,57 @@ See [`docs/DATABASE_DESIGN.md`](docs/DATABASE_DESIGN.md) for full ER diagram, da
 
 ## ETL Pipeline Stages
 
+Execution order per scene:
+
+```
+DOWNLOAD → CROP → LEE_FILTER → QUALITY_ANALYTICS → GOLD_EXPORT → PREVIEW → FUSION → CLEANUP
+```
+
 | Module | Stage | Output Tier |
 |--------|-------|-------------|
 | `module1_download.py` | DOWNLOAD | RAW |
 | `module2_crop.py` | CROP | BRONZE |
 | `module3_lee_filter.py` | LEE_FILTER | SILVER |
-| `module4_cog_export.py` | COG_EXPORT | GOLD |
+| `module6_analytics.py` | QUALITY_ANALYTICS | Quality metrics (reads SILVER) |
+| `module4_gold_export.py` | GOLD_EXPORT | GOLD |
+| `module10_generate_preview.py` | PREVIEW | PREVIEW |
+| `module9_fusion.py` | FUSION | FUSION |
 | `module5_orchestrator.py` | ORCHESTRATE | DB checkpoints |
-| `module6_analytics.py` | QUALITY_ANALYTICS | Quality metrics |
+
+### PREVIEW tier
+
+Renders publication- and analysis-ready PNGs from the GOLD COGs of a single
+acquisition date, into
+`data/datasets/{id}_{slug}/preview/{YYYYMMDD}/`:
+
+- `grayscale/` — percentile 2–98 stretch, no hue. For reading one file's own
+  values; contrast is optimised per file, so grey levels are **not** comparable
+  across dates.
+- `colored/` — per-source colormaps on physically meaningful ranges (NDVI/NDWI
+  pinned to −1..1, rainfall starting at 0), plus a false-colour
+  `s1_rgb_composite.png` (R=VV, G=VH, B=VV−VH). For figures and for comparing
+  dates.
+- `preview_metadata.json` + one `*_info.json` per subfolder, describing the
+  stretch, the colormap strategy, and how to read each layer.
+
+It runs **after GOLD_EXPORT and before FUSION** on purpose: a dataset that only
+requested the FUSION tier deletes `gold/` during cleanup, so this is the one
+window in which every GOLD raster for that date still exists on disk. Preview
+failures never fail the scene — FUSION, the actual deliverable, does not depend
+on them.
+
+PREVIEW is a *derived* tier: it is not part of the RAW→FUSION lineage, is never
+registered in `data_products`, and is never removed by tier cleanup.
+
+Turn it off per dataset with the **"Buat Preview (Grayscale + Berwarna)"**
+checkbox on the create form, or `generate_preview: false` on
+`POST /api/datasets`. It is stored in `datasets.generate_preview`
+(`DEFAULT TRUE`, migration 016 — **required**, unlike the optional 015).
+Disabling previews does not affect FUSION. Regenerate a single date with:
+
+```bash
+python -m etl.module10_generate_preview <dataset_id> <dataset_name> <YYYYMMDD> [s1_scene_key]
+```
 
 ---
 

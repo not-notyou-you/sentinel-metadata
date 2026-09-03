@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS datasets (
     failed_scenes        INTEGER         NOT NULL DEFAULT 0,
     total_size_bytes     BIGINT          NOT NULL DEFAULT 0,
     is_deletable         BOOLEAN         NOT NULL DEFAULT TRUE,
+    -- Ditambahkan oleh migrasi 016; disamakan di sini supaya instalasi baru
+    -- tidak perlu langsung menambal kolom yang sama.
+    generate_preview     BOOLEAN         NOT NULL DEFAULT TRUE,
     live_enabled         BOOLEAN         NOT NULL DEFAULT FALSE,
     live_last_checked_at TIMESTAMPTZ,
     created_at           TIMESTAMPTZ     NOT NULL DEFAULT NOW(),

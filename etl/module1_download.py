@@ -191,9 +191,24 @@ def download_scene(
 
                     resp.raise_for_status()
 
+                    # A Range request is only honoured when the server answers
+                    # 206. CDSE sometimes replies 200 with the whole file
+                    # anyway; appending that to the existing .part silently
+                    # produces a corrupt ZIP (and a nonsense total, e.g.
+                    # "948 / 2922 MB" for a 2024 MB product), so fall back to
+                    # restarting the file from scratch.
+                    resumed = resume_from > 0 and resp.status_code == 206
+                    if resume_from > 0 and not resumed:
+                        logger.warning(
+                            "[M1] Server mengabaikan Range (HTTP %d), "
+                            "download diulang dari awal.", resp.status_code,
+                        )
+                        session.headers.pop("Range", None)
+                        resume_from = 0
+
                     total = int(resp.headers.get("Content-Length", 0)) + resume_from
                     downloaded = resume_from
-                    write_mode = "ab" if resume_from > 0 else "wb"
+                    write_mode = "ab" if resumed else "wb"
 
                     with open(part_path, write_mode) as fout:
                         for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):

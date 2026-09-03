@@ -31,6 +31,7 @@ from etl.module3_lee_filter import run as lee_run
 from etl.module4_gold_export import export_scene_to_gold, gold_product_type
 from etl.module6_analytics import compute_band_metrics
 from etl.module9_fusion import FUSION_LAYERS, create_fusion_stack, ensure_aux_inputs_for_date
+from etl.module10_generate_preview import generate_previews
 from etl.pipeline_logger import (
     PipelineLogger,
     adopt_dataset_log_scope,
@@ -365,10 +366,72 @@ def _process_scene(
     if jc.cancel_event.is_set():
         return scene_id, produced_tiers, produced_files
 
-    jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="RUNNING")
-
     s1_date = acq_date.date()
     date_key = s1_date.strftime("%Y%m%d")
+
+    # Input aux (MODIS + GPM: unduh -> SILVER -> COG GOLD) disiapkan di sini,
+    # bukan lagi di dalam blok FUSION. PREVIEW me-render dari tier GOLD, jadi
+    # kalau MODIS/GPM baru dimaterialisasi saat fusion berjalan, preview akan
+    # selalu kehabisan lima dari tujuh lapisannya. Pemanggilannya idempotent
+    # dan tetap cuma sekali per scene.
+    aux_produced = ensure_aux_inputs_for_date(
+        jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date, plog=jc.plog
+    )
+    # File MODIS/GPM yang baru ditulis ikut dicatat di tier-nya masing-masing,
+    # supaya _cleanup_scene_tiers bisa menghapusnya juga kalau tier itu tidak
+    # diminta dataset ini.
+    for aux_tier, aux_paths in aux_produced.items():
+        produced_files.setdefault(aux_tier, []).extend(aux_paths)
+        if aux_paths and aux_tier not in produced_tiers:
+            produced_tiers.append(aux_tier)
+
+    # --- PREVIEW ---------------------------------------------------------
+    # Dijalankan sebelum FUSION dan sebelum _cleanup_scene_tiers: dataset yang
+    # cuma meminta tier FUSION akan menghapus gold/ setelah scene selesai,
+    # jadi ini satu-satunya jendela waktu ketika seluruh raster GOLD satu
+    # tanggal masih ada di disk untuk dirender.
+    #
+    # Kegagalannya sengaja tidak menjatuhkan scene: preview adalah artefak
+    # turunan, dan HDF5 fusion -- deliverable yang sebenarnya -- tidak
+    # bergantung padanya. plog.stage sudah mencatat baris FAILED lengkap
+    # dengan traceback, lalu pipeline lanjut ke FUSION.
+    if "PREVIEW" not in jc.skip_stages:
+        jc.dsmgr.upsert_scene_job_state(
+            jc.job_id, pid, current_stage="PREVIEW", stage_status="RUNNING"
+        )
+        try:
+            with jc.plog.stage(
+                jc.dataset_id, pid, module="MODULE10_PREVIEW", stage="PREVIEW",
+                message="Rendering PNG preview (grayscale + colored) dari tier GOLD",
+                acquisition_date=date_key,
+            ) as st:
+                preview_result = generate_previews(
+                    jc.dataset_id, jc.dataset_name, s1_date,
+                    s1_scene_key=pid, s1_gold_files=gold_files,
+                )
+                st.output(
+                    output_dir=str(fm.get_preview_dir(jc.dataset_id, jc.dataset_name, date_key)),
+                    grayscale_count=preview_result["counts"]["grayscale"],
+                    colored_count=preview_result["counts"]["colored"],
+                    skipped_count=preview_result["counts"]["skipped"],
+                    file_size_mb=preview_result["total_size_mb"],
+                )
+            produced_files["PREVIEW"] = preview_result["files"]
+            jc.dsmgr.upsert_scene_job_state(
+                jc.job_id, pid, current_stage="PREVIEW", stage_status="COMPLETED"
+            )
+        except Exception:
+            # State scene sengaja tidak ditandai FAILED: scene-nya sendiri
+            # tidak gagal, dan menandainya begitu akan membuatnya terhitung
+            # di failed_count padahal FUSION masih akan berhasil.
+            logger.exception("[ORCH] PREVIEW gagal pid=%s, lanjut ke FUSION", pid)
+
+    # PREVIEW sengaja TIDAK masuk produced_tiers: dia bukan mata rantai
+    # lineage RAW->FUSION, jadi compute_tiers_to_delete tidak boleh
+    # menghapusnya cuma karena tidak disebut di required_tiers dataset.
+
+    jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="RUNNING")
+
     fusion_dir = fm.get_fusion_dir(jc.dataset_id, jc.dataset_name, date_key)
     h5_path = fusion_dir / f"fusion_{date_key}.h5"
 
@@ -383,9 +446,6 @@ def _process_scene(
                 {"progress_percent": round(done / total * 100, 1), "layer": layer_name},
             )
 
-        aux_produced = ensure_aux_inputs_for_date(
-            jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date, plog=jc.plog
-        )
         create_fusion_stack(
             jc.dataset_id, jc.dataset_name, s1_date, jc.bbox_tuple, scene_id,
             db=jc.db, progress_cb=_fusion_progress,
@@ -400,13 +460,6 @@ def _process_scene(
         str(h5_path),
         str(fusion_dir / "fusion_metadata.json"),
     ]
-    # File MODIS/GPM yang baru ditulis ensure_aux_inputs_for_date ikut
-    # dicatat di tier-nya masing-masing, supaya _cleanup_scene_tiers bisa
-    # menghapusnya juga kalau tier itu tidak diminta dataset ini.
-    for aux_tier, aux_paths in aux_produced.items():
-        produced_files.setdefault(aux_tier, []).extend(aux_paths)
-        if aux_paths and aux_tier not in produced_tiers:
-            produced_tiers.append(aux_tier)
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="COMPLETED")
 
     return scene_id, produced_tiers, produced_files
@@ -476,6 +529,10 @@ def _record_worker_failure(
         logger.exception("[ORCH] gagal mencatat kegagalan pid=%s stage=%s", pid, stage)
 
 
+class _JobCancelled(Exception):
+    """Raised from a progress callback to abort work already in flight."""
+
+
 def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue) -> None:
     if jc.log_path:
         adopt_dataset_log_scope(jc.log_path)
@@ -496,6 +553,14 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             )
 
             def _download_progress(pct: float, detail: str) -> None:
+                # Cancel was previously only checked between scenes, so a
+                # cancel (or force-delete) landing mid-download left the
+                # worker streaming a ~2 GB scene for minutes against a job --
+                # and, after a force-delete, a dataset -- that no longer
+                # exists. Progress callbacks are the only hook into the
+                # transfer, so the abort is raised from here.
+                if jc.cancel_event.is_set():
+                    raise _JobCancelled(f"job_id={jc.job_id} dibatalkan")
                 jc.plog.log_event(
                     jc.dataset_id, pid, "MODULE1_DOWNLOAD", "DOWNLOAD", "RUNNING",
                     f"Downloading: {detail}", {"progress_percent": round(pct, 1)},
@@ -516,7 +581,13 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
                 )
             jc.dsmgr.increment_job_counters(jc.job_id, downloaded=1)
             download_queue.put((scene_meta, result))
+        except _JobCancelled:
+            logger.info("[ORCH] download dibatalkan pid=%s job_id=%d", pid, jc.job_id)
+            break
         except Exception as exc:
+            if jc.cancel_event.is_set():
+                logger.info("[ORCH] download dibatalkan pid=%s job_id=%d", pid, jc.job_id)
+                break
             logger.exception("[ORCH] download gagal pid=%s job_id=%d", pid, jc.job_id)
             _record_worker_failure(jc, pid, "DOWNLOAD", exc)
             jc.dsmgr.upsert_scene_job_state(
@@ -618,6 +689,20 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     min_quality_score = float(quality_settings.get("min_quality_score") or 60.0)
     min_cloud_cover = quality_settings.get("min_cloud_cover")
     skip_stages = compute_skip_stages(required_tiers)
+
+    # PREVIEW punya dua alasan bisa dilewati, dan keduanya dilipat jadi satu di
+    # sini supaya _process_scene cukup memeriksa skip_stages seperti tahap lain:
+    #   1. tier tertinggi dataset di bawah GOLD -> sudah ditangani
+    #      compute_skip_stages (tidak ada raster GOLD untuk dirender);
+    #   2. user mematikan checkbox "Buat Preview" -> kolom generate_preview.
+    # Default kolomnya TRUE, jadi dataset lama berperilaku persis seperti dulu.
+    if not dataset.get("generate_preview", True):
+        skip_stages.add("PREVIEW")
+        logger.info(
+            "[ORCH] job_id=%d PREVIEW dilewati: dimatikan di konfigurasi dataset "
+            "(generate_preview=false)", job_id,
+        )
+
     bbox_tuple = _bbox_tuple_from_wkt(bbox_wkt)
     base_dir = fm.get_dataset_root(dataset_id, dataset_name)
     base_dir.mkdir(parents=True, exist_ok=True)

@@ -109,7 +109,8 @@ def db_client():
                 ('ORCHESTRATE',       'OR',  5, 'Pipeline orchestration, checkpointing, and retry management', 10,  1, 10, TRUE, TRUE),
                 ('QUALITY_ANALYTICS', 'QA',  6, 'Quality metrics computation and visualization',              30,  2, 30, TRUE, TRUE),
                 ('FUSION',            'FS',  7, 'Multi-modal HDF5 feature stack fusion (Sentinel-1 + MODIS + GPM) for GOLD tier', 60, 2, 30, TRUE, TRUE),
-                ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30, TRUE, TRUE)
+                ('GOLD_EXPORT',       'GE',  8, 'Per-source Cloud-Optimized GeoTIFF export untuk tier GOLD',  45,  2, 30, TRUE, TRUE),
+                ('PREVIEW',           'PV',  9, 'Render PNG preview (grayscale + colored) dari tier GOLD, sebelum FUSION', 15, 1, 15, FALSE, TRUE)
             ON CONFLICT (stage_name) DO NOTHING
         """))
     yield client

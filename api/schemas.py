@@ -202,6 +202,10 @@ class DatasetCreateRequest(BaseModel):
     name: str
     description: str | None = None
     quality_settings: DatasetQualitySettings | None = None
+    # Default True: preview murah dan berguna untuk riset, jadi opt-out, bukan
+    # opt-in. Pemanggil lama yang tidak mengirim field ini tetap dapat perilaku
+    # lamanya (PREVIEW jalan).
+    generate_preview: bool = True
 
     @field_validator("tiers")
     @classmethod
@@ -252,6 +256,7 @@ class DatasetItem(BaseModel):
     failed_scenes: int
     total_size_bytes: int
     is_deletable: bool
+    generate_preview: bool
     live_enabled: bool
     created_at: datetime
     updated_at: datetime

@@ -18,17 +18,25 @@ from etl.location_resolver import resolve_location, resolve_region_id
 
 logger = logging.getLogger(__name__)
 
+# Tier yang bisa diminta user dan ikut aturan retensi. PREVIEW sengaja tidak
+# ada di sini: dia tier turunan (PNG hasil render dari GOLD, lihat
+# folder_manager.TIERS) yang tidak pernah diminta eksplisit dan tidak pernah
+# ikut dihapus compute_tiers_to_delete.
 TIER_ORDER = ["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"]
 
 # Tahap pipeline -> index tier tertinggi yang dibutuhkan tahap itu.
 # QUALITY_ANALYTICS membaca SILVER (bukan menghasilkan tier baru), jadi
-# index-nya sama dengan LEE_FILTER.
+# index-nya sama dengan LEE_FILTER. PREVIEW membaca GOLD, jadi index-nya sama
+# dengan GOLD_EXPORT: dataset yang berhenti di SILVER melewatinya, dataset
+# yang sampai GOLD atau FUSION menjalankannya. Karena index PREVIEW (3) <=
+# index FUSION (4), FUSION tidak pernah jalan tanpa PREVIEW ikut jalan.
 STAGE_TIER_INDEX = {
     "DOWNLOAD": 0,
     "CROP": 1,
     "LEE_FILTER": 2,
     "QUALITY_ANALYTICS": 2,
     "GOLD_EXPORT": 3,
+    "PREVIEW": 3,
     "FUSION": 4,
 }
 
@@ -113,6 +121,7 @@ class DatasetManager:
         region_id: int | None = None,
         description: str | None = None,
         quality_settings: dict | None = None,
+        generate_preview: bool = True,
     ) -> dict:
         normalized_tiers = _normalize_tiers(tiers)
         # region_id = lokasi dipilih dari tabel (jalur UI). location = nama bebas
@@ -135,6 +144,7 @@ class DatasetManager:
                 date_end=date_end,
                 required_tiers=normalized_tiers,
                 quality_settings=quality_settings or {},
+                generate_preview=generate_preview,
                 dataset_kind="STANDARD",
                 status="QUEUED",
             )
@@ -728,6 +738,10 @@ class DatasetManager:
             "failed_scenes": d.failed_scenes,
             "total_size_bytes": d.total_size_bytes,
             "is_deletable": d.is_deletable,
+            # Ikut di `base`, bukan cuma di `detail`: kartu dataset memakainya
+            # untuk membedakan "preview sengaja dimatikan" dari "preview belum
+            # sempat dibuat", dan daftar kartu tidak mengambil detail.
+            "generate_preview": d.generate_preview,
             "live_enabled": d.live_enabled,
             "created_at": d.created_at,
             "updated_at": d.updated_at,

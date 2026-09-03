@@ -121,6 +121,22 @@
               <label class="tier-pill"><input type="checkbox" class="tier-check" value="FUSION" checked> FUSION</label>
               <label class="tier-pill"><input type="checkbox" id="tierAll"> Semua</label>
             </div>
+
+            <!-- Opsi PREVIEW. Sengaja di luar .tier-group: PREVIEW bukan tier
+                 lineage yang bisa diminta lewat required_tiers (lihat migrasi
+                 015) -- dia turunan yang dirender dari GOLD -- jadi menaruhnya
+                 sebagai pill keenam akan menyiratkan dia sejajar dengan RAW..
+                 FUSION dan ikut aturan retensi yang sama. Nilainya dikirim
+                 sebagai field `generate_preview` tersendiri. -->
+            <label class="option-row" for="fGeneratePreview">
+              <input type="checkbox" id="fGeneratePreview" checked>
+              <span class="option-icon" id="previewOptIcon"></span>
+              <span class="option-text">
+                <span class="option-label">Buat Preview (Grayscale + Berwarna)</span>
+                <span class="option-desc">Menghasilkan PNG dari tier GOLD untuk publikasi dan pembacaan ilmiah. Matikan untuk mempercepat proses.</span>
+              </span>
+            </label>
+
             <div class="field">
               <label for="fName">Nama dataset</label>
               <input type="text" id="fName" placeholder="dataset nov ke feb" required>

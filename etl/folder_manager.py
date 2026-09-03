@@ -21,6 +21,10 @@ Layout on-disk:
             gpm/{scene}/
         fusion/
             {scene}/                    # lintas-source, jadi tidak punya level source
+        preview/
+            {scene}/                    # lintas-source juga
+                grayscale/              # PNG stretch persentil, 1 kanal + alpha
+                colored/                # PNG colormap/false-color RGBA
 
 `{scene}` untuk file Sentinel-1 adalah product_identifier scene tersebut
 (sudah unik termasuk jam:menit:detik). Untuk artefak yang tidak terikat ke
@@ -28,10 +32,15 @@ satu scene S1 tertentu (MODIS/GPM harian, dan output fusion yang di-dedup per
 tanggal — lihat module9_fusion.py), `{scene}` adalah tanggal akuisisi dalam
 format YYYYMMDD.
 
-Level `{source}` ada di setiap tier kecuali `fusion`: tier fusion justru
-*gabungan* dari semua source, jadi memberinya satu folder source akan
+Level `{source}` ada di setiap tier kecuali `fusion` dan `preview`: keduanya
+justru *gabungan* dari semua source, jadi memberinya satu folder source akan
 menyesatkan. Semua fungsi di sini menolak kombinasi tier/source yang tidak
 valid alih-alih diam-diam menulis ke tempat yang salah.
+
+`preview` adalah tier turunan (PNG hasil render dari gold/) — dia ikut di
+`TIERS` supaya terhitung di `storage_breakdown` dan bisa dilisting API, tapi
+sengaja TIDAK ada di `dataset_manager.TIER_ORDER`: dia bukan mata rantai
+lineage RAW→FUSION dan tidak pernah ikut dihapus `compute_tiers_to_delete`.
 """
 
 from __future__ import annotations
@@ -44,11 +53,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TIERS: tuple[str, ...] = ("raw", "bronze", "silver", "gold", "fusion")
+TIERS: tuple[str, ...] = ("raw", "bronze", "silver", "gold", "preview", "fusion")
 
 SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 
-# Tier fusion sengaja dipetakan ke tuple kosong: dia lintas-source.
+# Tier fusion dan preview sengaja dipetakan ke tuple kosong: keduanya
+# lintas-source.
 # bronze cuma dipakai Sentinel-1 (crop AOI) — MODIS/GPM langsung dari granule
 # mentah di raw/ ke produk harian di silver/, tanpa tahap crop terpisah.
 TIER_SOURCES: dict[str, tuple[str, ...]] = {
@@ -56,8 +66,16 @@ TIER_SOURCES: dict[str, tuple[str, ...]] = {
     "bronze": ("sentinel1",),
     "silver": SOURCES,
     "gold": SOURCES,
+    "preview": (),
     "fusion": (),
 }
+
+# Tier yang tidak punya level source: langsung {tier}/{scene}/.
+SOURCELESS_TIERS: tuple[str, ...] = tuple(t for t, s in TIER_SOURCES.items() if not s)
+
+# Subfolder di dalam satu scene preview. Urutannya ikut dipakai
+# module10_generate_preview.py sebagai urutan tampil.
+PREVIEW_KINDS: tuple[str, ...] = ("grayscale", "colored")
 
 # Source yang file mentahnya berupa cache granule flat (bukan per-scene):
 # satu granule GPM harian ikut dipakai window 72h/7d tanggal berikutnya, jadi
@@ -201,6 +219,38 @@ def ensure_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Pat
     return p
 
 
+def get_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
+    """Folder preview untuk satu tanggal: preview/{YYYYMMDD}/.
+
+    Sama seperti fusion, tier ini lintas-source: satu folder tanggal memuat
+    render dari sentinel1 + modis + gpm sekaligus, jadi tidak punya level
+    {source}. Di dalamnya ada subfolder per `PREVIEW_KINDS`."""
+    return get_tier_dir(dataset_id, dataset_name, "preview") / scene_slug(scene_key)
+
+
+def ensure_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
+    p = get_preview_dir(dataset_id, dataset_name, scene_key)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_preview_kind_dir(
+    dataset_id: int, dataset_name: str, scene_key: str, kind: str
+) -> Path:
+    """Subfolder satu jenis render: preview/{YYYYMMDD}/{grayscale|colored}/."""
+    if kind not in PREVIEW_KINDS:
+        raise ValueError(f"Jenis preview tidak valid: {kind!r}. Valid: {PREVIEW_KINDS}")
+    return get_preview_dir(dataset_id, dataset_name, scene_key) / kind
+
+
+def ensure_preview_kind_dir(
+    dataset_id: int, dataset_name: str, scene_key: str, kind: str
+) -> Path:
+    p = get_preview_kind_dir(dataset_id, dataset_name, scene_key, kind)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def get_scratch_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
     """Folder kerja sementara (hasil kalibrasi radiometrik sebelum crop),
     dihapus otomatis setelah tahap CROP selesai — bukan bagian dari tier
@@ -256,11 +306,26 @@ def list_loose_files(
     return sorted(f for f in p.iterdir() if f.is_file() and not f.name.startswith("."))
 
 
-def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
-    p = get_tier_dir(dataset_id, dataset_name, "fusion")
+def list_sourceless_scenes(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
+    """Folder scene di satu tier lintas-source (`fusion`, `preview`), yang
+    isinya langsung {tier}/{scene}/ tanpa level {source} di antaranya."""
+    tier = normalize_tier(tier)
+    if TIER_SOURCES[tier]:
+        raise ValueError(
+            f"Tier {tier!r} punya level source — pakai list_scenes(tier, source)."
+        )
+    p = get_tier_dir(dataset_id, dataset_name, tier)
     if not p.exists():
         return []
     return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
+
+
+def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
+    return list_sourceless_scenes(dataset_id, dataset_name, "fusion")
+
+
+def list_preview_scenes(dataset_id: int, dataset_name: str) -> list[str]:
+    return list_sourceless_scenes(dataset_id, dataset_name, "preview")
 
 
 def _files_under(p: Path) -> list[Path]:
@@ -278,6 +343,23 @@ def get_scene_files(
 
 def get_fusion_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
     return _files_under(get_fusion_dir(dataset_id, dataset_name, scene_key))
+
+
+def get_preview_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
+    """Semua berkas satu scene preview, termasuk yang ada di dalam
+    subfolder grayscale/ dan colored/ (_files_under rglob rekursif)."""
+    return _files_under(get_preview_dir(dataset_id, dataset_name, scene_key))
+
+
+def get_sourceless_scene_files(
+    dataset_id: int, dataset_name: str, tier: str, scene_key: str
+) -> list[Path]:
+    """Versi generik get_fusion_scene_files/get_preview_scene_files, untuk
+    pemanggil yang tier-nya baru diketahui saat runtime (mis. API listing)."""
+    tier = normalize_tier(tier)
+    if TIER_SOURCES[tier]:
+        raise ValueError(f"Tier {tier!r} punya level source — pakai get_scene_files().")
+    return _files_under(get_tier_dir(dataset_id, dataset_name, tier) / scene_slug(scene_key))
 
 
 def get_source_files(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[Path]:
@@ -333,8 +415,8 @@ def storage_breakdown(dataset_id: int, dataset_name: str) -> dict:
                 agg["file_count"] += len(files)
             scene_count = sum(v["scene_count"] for v in sources.values())
         else:
-            # Tier fusion: lintas-source, tidak punya pecahan per source.
-            scene_count = len(list_fusion_scenes(dataset_id, dataset_name))
+            # Tier fusion/preview: lintas-source, tidak punya pecahan per source.
+            scene_count = len(list_sourceless_scenes(dataset_id, dataset_name, tier))
 
         files = get_tier_files(dataset_id, dataset_name, tier)
         size = _size_of(files)
@@ -345,7 +427,11 @@ def storage_breakdown(dataset_id: int, dataset_name: str) -> dict:
             "sources": sources,
         }
         if not allowed and files:
-            agg = per_source.setdefault(FUSION_DB_SOURCE.lower(), {"size_bytes": 0, "file_count": 0})
+            # Tier lintas-source dilaporkan sebagai "source" semu bernama sama
+            # dengan tier-nya ("fusion", "preview") — dia memang tidak bisa
+            # dipecah ke sentinel1/modis/gpm, tapi tanpa baris ini ukurannya
+            # hilang dari ringkasan per-source dan totalnya tidak menjumlah.
+            agg = per_source.setdefault(tier, {"size_bytes": 0, "file_count": 0})
             agg["size_bytes"] += size
             agg["file_count"] += len(files)
 

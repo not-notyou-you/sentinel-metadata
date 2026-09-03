@@ -856,3 +856,132 @@ details.advanced .field-row-3 { margin-top: 14px; }
   opacity: 0.55;
   font-family: "IBM Plex Mono", monospace;
 }
+
+/* ---------------------------------------------------------------------------
+   Galeri PREVIEW (panel Struktur)
+   PNG hasil render tier preview: grayscale untuk pembacaan ilmiah, colored
+   untuk publikasi. Thumbnail dibatasi rasio tetap supaya grid tidak melompat
+   saat gambar selesai dimuat satu per satu (loading=lazy).
+   --------------------------------------------------------------------------- */
+.preview-section:empty { display: none; }
+.preview-section { margin-top: 20px; }
+
+.preview-title { display: flex; align-items: center; gap: 8px; }
+.preview-title-icon { width: 14px; height: 14px; display: inline-flex; color: var(--text-dim); }
+.preview-title-icon svg { width: 100%; height: 100%; }
+.preview-size { margin-left: auto; font-family: var(--font-mono); font-size: 11px; text-transform: none; letter-spacing: 0; }
+
+.preview-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.preview-dates { display: flex; gap: 4px; flex-wrap: wrap; }
+.preview-date, .preview-kind {
+  background: var(--glass-bg-alt);
+  border: 1px solid var(--hairline);
+  color: var(--text-dim);
+  font-family: inherit; font-size: 11px; font-weight: 600;
+  padding: 5px 10px; border-radius: 8px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.preview-date:hover, .preview-kind:hover { background: var(--glass-bg-hover); color: var(--text); }
+.preview-date.active, .preview-kind.active {
+  color: var(--ink); background: var(--cyan); border-color: var(--cyan);
+}
+.preview-single-date { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+
+.preview-kinds { display: flex; gap: 4px; margin-left: auto; }
+.preview-kind { display: inline-flex; align-items: center; gap: 6px; }
+.preview-kind-count {
+  font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 5px; border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+}
+.preview-kind.active .preview-kind-count { background: rgba(10,14,26,0.22); }
+
+.preview-blurb { font-size: 12px; color: var(--text-dim); margin: 0 0 12px; line-height: 1.5; }
+
+/* auto-fill + minmax: satu gambar tetap selebar kolomnya di layar sempit,
+   dan berbaris 2-4 kolom di panel lebar tanpa media query terpisah. */
+.preview-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.preview-card {
+  margin: 0; display: flex; flex-direction: column;
+  background: var(--glass-bg-alt);
+  border: 1px solid var(--hairline);
+  border-radius: 12px; overflow: hidden;
+}
+.preview-thumb {
+  aspect-ratio: 1 / 1;
+  /* Kotak-kotak catur: PNG preview transparan di piksel NoData, dan di atas
+     latar polos daerah kosong itu tidak bisa dibedakan dari data gelap. */
+  background:
+    repeating-conic-gradient(rgba(255,255,255,0.05) 0% 25%, transparent 0% 50%) 0 0 / 14px 14px,
+    var(--ink);
+}
+.preview-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.preview-card figcaption { padding: 9px 10px 11px; display: flex; flex-direction: column; gap: 5px; }
+.preview-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.preview-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.preview-tag {
+  font-size: 10px; padding: 2px 6px; border-radius: 999px;
+  background: rgba(255,255,255,0.07); color: var(--text-dim);
+}
+.preview-tag.mono { font-family: var(--font-mono); }
+.preview-note {
+  font-size: 11px; line-height: 1.45; color: var(--text-dim);
+  /* Interpretasi bisa panjang; dipangkas 3 baris supaya tinggi kartu dalam
+     satu baris grid tetap seragam. Teks penuh ada di title. */
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  line-clamp: 3; overflow: hidden;
+}
+.preview-missing { font-size: 11px; color: var(--amber); margin: 10px 0 0; }
+
+@media (max-width: 560px) {
+  .preview-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .preview-kinds { margin-left: 0; }
+}
+
+/* ---------------------------------------------------------------------------
+   Opsi pipeline di form "Buat Dataset" (mis. "Buat Preview").
+   Bukan .tier-pill: pill itu untuk tier lineage yang saling setara dan muat
+   satu kata, sedangkan opsi di sini butuh baris penjelasan sendiri agar
+   konsekuensinya (waktu proses vs gambar untuk publikasi) terbaca sebelum
+   dicentang, bukan sesudah.
+   --------------------------------------------------------------------------- */
+.option-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.03);
+  border-radius: 12px;
+  padding: 11px 13px;
+  margin-bottom: 18px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.option-row:hover { background: rgba(255,255,255,0.055); }
+/* :has() memberi umpan balik "aktif" pada seluruh kartu, bukan cuma kotak
+   centangnya. Browser yang belum mendukungnya tetap dapat kartu yang berfungsi
+   penuh -- hanya kehilangan penandaan warnanya. */
+.option-row:has(input:checked) { border-color: rgba(0,240,255,0.45); background: rgba(0,240,255,0.07); }
+.option-row:has(input:focus-visible) { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.option-row input { accent-color: var(--cyan); margin-top: 2px; flex-shrink: 0; }
+.option-icon { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; color: var(--text-dim); }
+.option-icon svg { width: 100%; height: 100%; display: block; }
+.option-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.option-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.option-desc { font-size: 11px; line-height: 1.45; color: var(--text-dim); }
+
+/* Galeri preview kosong: menjelaskan SEBABNYA (opsi dimatikan / tier di bawah
+   GOLD / dataset lama), bukan cuma "tidak ada data". */
+.preview-empty {
+  font-size: 12px; line-height: 1.55; color: var(--text-dim);
+  border: 1px dashed var(--hairline);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+@media (max-width: 560px) {
+  .option-row { padding: 10px; }
+  .option-desc { font-size: 10.5px; }
+}

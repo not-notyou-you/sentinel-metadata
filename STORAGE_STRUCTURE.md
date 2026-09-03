@@ -38,6 +38,16 @@ data/
         │   ├── sentinel1/{product_identifier}.SAFE/
         │   ├── modis/{YYYYMMDD}/
         │   └── gpm/{YYYYMMDD}/
+        ├── preview/                              # lintas-source: TIDAK punya level source
+        │   └── {tanggal}/                        # YYYYMMDD
+        │       ├── preview_metadata.json         # rujukan induk: daftar berkas + waktu render
+        │       ├── grayscale/
+        │       │   ├── {key}.png                 # LA (luminansi + alpha), stretch persentil 2-98
+        │       │   └── grayscale_info.json
+        │       └── colored/
+        │           ├── {key}.png                 # RGBA, colormap per-source
+        │           ├── s1_rgb_composite.png      # false color VV/VH/(VV-VH)
+        │           └── colored_info.json
         └── fusion/                               # lintas-source: TIDAK punya level source
             └── {YYYYMMDD}/
                 ├── fusion_{date}.h5
@@ -49,7 +59,7 @@ data/
   Slug: karakter selain `A-Za-z0-9_.-` diganti `_` (fungsi `folder_manager.slugify`,
   sama persis dengan `pipeline_logger.py:_slug_filename` yang dipakai untuk nama
   file log per-dataset).
-- Level `{source}` ada di **setiap tier kecuali `fusion`**. Tier fusion justru
+- Level `{source}` ada di **setiap tier kecuali `fusion` dan `preview`**. Keduanya justru
   gabungan ketiga source, jadi memberinya satu folder source akan menyesatkan;
   `folder_manager` menolak permintaan source untuk tier itu alih-alih diam-diam
   menulis ke tempat yang salah.
@@ -77,13 +87,17 @@ data/
 | bronze | `module2_crop.py`                                    | TIFF S1 setelah dipotong ke bbox AOI                                     |
 | silver | `module3_lee_filter.py`, `module7`, `module8`        | TIFF S1 setelah speckle filtering (Lee); GeoTIFF harian MODIS flood/NDVI/NDWI dan GPM rainfall |
 | gold   | `module4_gold_export.py`                             | COG analysis-ready per band per source (overview + tiling internal)      |
+| preview | `module10_generate_preview.py`                       | PNG turunan dari GOLD: `grayscale/` (ilmiah) + `colored/` (publikasi) + sidecar JSON |
 | fusion | `module9_fusion.py`                                  | HDF5 multi-modal gabungan semua source + `fusion_metadata.json`          |
 
 Pipeline penuh: DOWNLOAD (raw) → CROP (bronze) → LEE_FILTER (silver) →
-QUALITY_ANALYTICS (metrik atas silver) → GOLD_EXPORT (gold) → FUSION (fusion).
-Input MODIS/GPM disiapkan di tahap FUSION lewat
-`module9_fusion.ensure_aux_inputs_for_date`, yang mengunduh ke silver lalu ikut
-mengekspornya ke gold sebelum fusion membacanya.
+QUALITY_ANALYTICS (metrik atas silver) → GOLD_EXPORT (gold) → PREVIEW (preview)
+→ FUSION (fusion).
+Input MODIS/GPM disiapkan lewat `module9_fusion.ensure_aux_inputs_for_date`,
+yang mengunduh ke silver lalu ikut mengekspornya ke gold. Pemanggilannya duduk
+tepat sebelum tahap PREVIEW, bukan lagi di dalam blok FUSION: PREVIEW me-render
+dari tier GOLD, jadi kalau MODIS/GPM baru dimaterialisasi saat fusion berjalan,
+preview akan selalu kehilangan lima dari tujuh lapisannya.
 
 `module6_analytics.py` menulis `metadata_qa.json` ke folder scene S1 di
 `silver/sentinel1/{product_identifier}.SAFE/`, berisi metrik band VV/VH (quality
@@ -113,6 +127,115 @@ MODIS NDVI/NDWI dihitung dari surface reflectance MOD09GA:
 permukaan, bukan NDWI Gao untuk kelembapan vegetasi). Indeksnya dihitung di grid
 sinusoidal asli lalu direproject, bukan sebaliknya: meresample tiap band dulu
 lalu membagi akan menggeser nilai indeks di tepi tiap fitur.
+
+## Isi tier PREVIEW
+
+`etl/module10_generate_preview.py` me-render PNG dari COG di `gold/` untuk satu
+tanggal akuisisi. Tujuh lapisan yang dirender, satu berkas per lapisan di tiap
+subfolder, dinamai persis `{key}.png`:
+
+| key | source | band GOLD | colormap `colored/` | rentang |
+|-----|--------|-----------|---------------------|---------|
+| `s1_vv`         | sentinel1 | VV       | viridis | persentil 2–98 (dB) |
+| `s1_vh`         | sentinel1 | VH       | viridis | persentil 2–98 (dB) |
+| `modis_ndvi`    | modis     | NDVI     | RdYlGn  | tetap −1..1 |
+| `modis_ndwi`    | modis     | NDWI     | BrBG    | tetap −1..1 |
+| `gpm_rain_24h`  | gpm       | RAIN_24H | YlGnBu  | 0..persentil 98 |
+| `gpm_rain_72h`  | gpm       | RAIN_72H | YlGnBu  | 0..persentil 98 |
+| `gpm_rain_7d`   | gpm       | RAIN_7D  | YlGnBu  | 0..persentil 98 |
+
+Ditambah satu berkas yang hanya ada di `colored/`: `s1_rgb_composite.png`,
+false color dengan R = VV, G = VH, B = VV−VH (dB), tiap kanal di-stretch
+persentil sendiri-sendiri karena rentang dB VV dan VH memang berbeda.
+
+Jadi satu tanggal dengan ketiga source lengkap menghasilkan **7 PNG grayscale +
+8 PNG colored + 3 sidecar JSON**. Lapisan yang berkas GOLD-nya tidak ada
+(mis. unduhan MODIS gagal) dilewati dan dicatat di `preview_metadata.json`
+bagian `skipped` — bukan digagalkan.
+
+### grayscale/ vs colored/
+
+|  | `grayscale/` | `colored/` |
+|--|--------------|------------|
+| Untuk | pembacaan ilmiah satu berkas | publikasi, presentasi, perbandingan lintas tanggal |
+| Mode PNG | LA (luminansi + alpha) | RGBA |
+| Rentang | selalu persentil 2–98 **per berkas** | per source; MODIS/GPM dipatok agar stabil lintas tanggal |
+| Bisa dibandingkan antar tanggal | **tidak** — skalanya bergeser mengikuti isi berkas | ya, untuk MODIS dan GPM |
+
+Piksel NoData transparan di keduanya (`alpha=0`), bukan hitam: hitam adalah
+nilai yang sah untuk backscatter rendah (air tenang), jadi memetakan NoData ke
+hitam menghapus beda antara "air" dan "tidak ada data".
+
+Band Sentinel-1 dikonversi ke desibel (`10*log10`) sebelum di-stretch. GOLD
+menyimpan sigma0 **linear** (`cog_convert_db` default false) yang sebarannya
+menjulur ekstrem — persentil 98-nya di ~1.2 sementara maksimumnya ratusan —
+sehingga stretch persentil langsung di atas nilai linear menghasilkan citra
+gelap tak terbaca. Konversinya auto-deteksi: kalau datanya sudah dalam dB
+(ada nilai valid ≤ 0), langkah ini dilewati.
+
+### Kenapa PREVIEW bukan `product_tier` di database
+
+PNG preview **tidak** didaftarkan di `data_products`, dan `PREVIEW` **tidak**
+ada di `dataset_manager.TIER_ORDER`. Isinya turunan murni yang bisa dibangun
+ulang dari `gold/`, bukan produk data yang di-checksum, dilacak provenance-nya,
+atau dibaca tahap berikutnya. Konsekuensi yang disengaja:
+
+- `compute_tiers_to_delete` tidak pernah menghapus `preview/`. Kalau PREVIEW
+  ikut jadi tier resmi, semua dataset lama (yang `required_tiers`-nya tidak
+  menyebut PREVIEW) akan kehilangan preview-nya di tahap cleanup.
+- Ukurannya tetap terhitung di `storage_breakdown` karena `"preview"` ada di
+  `fm.TIERS` — dia muncul sebagai baris tier tersendiri di UI dan API.
+- Sumber kebenaran isinya adalah sidecar JSON di disk, dibaca langsung oleh
+  `GET /api/datasets/{id}/preview`.
+
+Migrasi `015_add_preview_stage.sql` hanya menambah satu baris di
+`processing_stages`, dan sifatnya opsional: tanpa migrasi itu tahap PREVIEW
+tetap berjalan dan tetap menulis PNG-nya.
+
+### Mematikan preview per dataset
+
+Kolom `datasets.generate_preview` (BOOLEAN NOT NULL DEFAULT TRUE, migrasi 016)
+mengontrol apakah tahap PREVIEW jalan. Di UI dia checkbox **"Buat Preview
+(Grayscale + Berwarna)"** di form Buat Dataset, tercentang secara default:
+preview murah dan berguna untuk riset, jadi ini opt-out, bukan opt-in.
+
+Orchestrator melipat flag itu ke `skip_stages` saat job disiapkan, jadi
+`_process_scene` cukup memeriksa `"PREVIEW" not in skip_stages` seperti tahap
+lain. Ada dua alasan berbeda PREVIEW bisa dilewati, dan keduanya berakhir di
+tempat yang sama:
+
+| Sebab | Ditangani oleh |
+|-------|----------------|
+| Tier tertinggi dataset di bawah GOLD (tidak ada raster untuk dirender) | `compute_skip_stages` |
+| User mematikan checkbox | `datasets.generate_preview` |
+
+Mematikan preview **tidak** memengaruhi FUSION: HDF5 tetap dibangun dari GOLD
+yang sama, karena FUSION tidak pernah membaca apa pun dari `preview/`.
+
+> Migrasi 016 **wajib** dijalankan, tidak seperti 015 yang opsional. Model ORM
+> `Dataset` memetakan kolom ini tanpa syarat, jadi tanpa kolomnya setiap query
+> ke tabel `datasets` gagal — bukan cuma jalur preview-nya.
+
+### Idempotensi dan biaya disk
+
+Render selalu menimpa (`overwrite=True`). Preview adalah turunan murni dan
+murah (~1–3 MB per PNG di lebar maksimum 1024 px), jadi menulis ulang lebih
+aman daripada menyimpan PNG basi dari GOLD versi lama. Hitungan kasar: ~9 MB
+per tanggal untuk Sentinel-1 saja, ~25–30 MB kalau ketiga source lengkap.
+
+Regenerasi manual satu tanggal:
+
+```bash
+python -m etl.module10_generate_preview <dataset_id> <dataset_name> <YYYYMMDD> [s1_scene_key]
+# contoh:
+python -m etl.module10_generate_preview 46 DEPOK_JULI 20260712 S1D_IW_GRDH_1SDV_..._5367.SAFE
+```
+
+`s1_scene_key` boleh dikosongkan untuk tanggal yang cuma punya MODIS/GPM.
+Perlu diingat: preview hanya bisa dibangun ulang selama `gold/` masih ada. Pada
+dataset yang cuma meminta tier FUSION, `gold/` sudah dihapus di cleanup — di
+situ `preview/` adalah satu-satunya rekaman visual yang tersisa, dan karena itu
+`preview` sengaja tidak ikut di `_DERIVED_TIERS` milik `/api/storage/cleanup`.
 
 ## Sumber kebenaran
 
@@ -151,10 +274,14 @@ Satu-satunya tempat yang tahu cara menyusun path ini:
 - `get_scene_dir(dataset_id, dataset_name, tier, source, scene_key)` → path satu scene
 - `ensure_scene_dir(...)` → sama seperti di atas, sekaligus `mkdir`
 - `get_fusion_dir(dataset_id, dataset_name, scene_key)` / `ensure_fusion_dir(...)` → folder fusion (tanpa level source)
+- `get_preview_dir(...)` / `ensure_preview_dir(...)` → folder preview satu tanggal
+- `get_preview_kind_dir(..., kind)` / `ensure_preview_kind_dir(...)` → subfolder `grayscale`/`colored` (`kind` divalidasi terhadap `fm.PREVIEW_KINDS`)
 - `get_scratch_dir(dataset_id, dataset_name, scene_key)` → folder `_work/{scene}` sementara
 - `get_granule_cache_dir(dataset_id, dataset_name, source)` → cache granule mentah `raw/{source}`
-- `list_sources(...)` / `list_scenes(...)` / `list_fusion_scenes(...)`
-- `get_scene_files(...)` / `get_source_files(...)` / `get_tier_files(...)` / `get_fusion_scene_files(...)`
+- `list_sources(...)` / `list_scenes(...)` / `list_fusion_scenes(...)` / `list_preview_scenes(...)`
+- `list_sourceless_scenes(dataset_id, dataset_name, tier)` — versi generik untuk tier tanpa level source (`fusion`, `preview`); dua fungsi di atas cuma pembungkusnya
+- `get_scene_files(...)` / `get_source_files(...)` / `get_tier_files(...)` / `get_fusion_scene_files(...)` / `get_preview_scene_files(...)`
+- `get_sourceless_scene_files(dataset_id, dataset_name, tier, scene_key)` — versi generik dua fungsi terakhir
 - `storage_breakdown(dataset_id, dataset_name)` → ringkasan ukuran per tier per source
 - `write_dataset_metadata(...)` / `read_dataset_metadata(...)` / `get_dataset_metadata_path(...)`
 - `slugify(name)` / `scene_slug(key)` / `date_key(d)` — sanitasi/normalisasi kunci
@@ -234,6 +361,20 @@ kalau dijalankan lagi. Log lengkap ada di `logs_pipeline/migrate_data_structure.
   jumlah scene per tier, dipecah lagi per source, plus agregat per source lintas tier.
 - `GET /api/datasets/{dataset_id}/storage/files/{tier}` — daftar file di satu
   tier, dikelompokkan per source dan scene. Terima `?source=` dan `?scene=`.
+  `tier=preview` dan `tier=fusion` dilaporkan tanpa level source.
+- `GET /api/datasets/{dataset_id}/preview` — galeri tier PREVIEW: tiap tanggal
+  berisi `kinds.grayscale` dan `kinds.colored`, masing-masing dengan daftar
+  gambar (URL siap `<img src>`, colormap, rentang nilai, interpretasi) plus
+  keterangan sidecar-nya. Terima `?scene=YYYYMMDD`. Selalu 200 walau kosong —
+  dataset lama memang tidak punya preview, dan itu bukan error.
+- `GET /api/datasets/{dataset_id}/preview/{scene}/{kind}/{filename}` — satu PNG
+  preview (`kind` = `grayscale` | `colored`), `Cache-Control: max-age=86400`.
+  Ketiga komponen path divalidasi dan hasilnya dicek harus berada di dalam
+  folder kind, jadi `..` di `filename` tidak bisa membaca berkas lain.
+- `POST /api/datasets` menerima `generate_preview` (bool, default `true`).
+  Field tersendiri, bukan bagian `quality_settings`: itu bag untuk ambang mutu
+  data, sedangkan ini sakelar tahap pipeline. Nilainya ikut dikembalikan di
+  `GET /api/datasets` dan `GET /api/datasets/{id}`.
 - `GET /api/datasets/{dataset_id}/download` — ZIP dataset. Terima `?tier=` dan
   `?source=` untuk mengunduh sebagian saja (mis. hanya GOLD MODIS tanpa ikut
   menarik puluhan GB tier RAW). Struktur folder di dalam ZIP selalu relatif ke

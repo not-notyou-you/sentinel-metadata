@@ -569,6 +569,11 @@ class Dataset(Base):
     failed_scenes = Column(Integer, nullable=False, default=0)
     total_size_bytes = Column(BigInteger, nullable=False, default=0)
     is_deletable = Column(Boolean, nullable=False, default=True)
+    # Jalankan tahap PREVIEW (render PNG dari GOLD) untuk dataset ini.
+    # Kolom sendiri, bukan key di quality_settings: ini pilihan user yang bisa
+    # di-query, sementara quality_settings isinya ambang mutu data. Lihat
+    # migrasi 016 -- WAJIB dijalankan, kolom ini dipetakan tanpa syarat.
+    generate_preview = Column(Boolean, nullable=False, default=True)
     live_enabled = Column(Boolean, nullable=False, default=False)
     live_last_checked_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
